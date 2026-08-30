@@ -214,5 +214,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Git worktrees
+.worktrees/
+
 # Streamlit
 .streamlit/secrets.toml
