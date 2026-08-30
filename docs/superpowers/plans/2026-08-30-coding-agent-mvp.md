@@ -1141,10 +1141,12 @@ Expected: FAIL because executor and broker do not exist.
 - [ ] **Step 3: Implement hook set, approval request, and broker**
 
 Implement `HookSet` with ordered async callbacks and default no-op hooks. Use
-one pending approval request at a time. `request_id` is unique. Unknown or already
-resolved ids return a structured runtime error; late decisions after abort are
-ignored. `cancel_all()` resolves pending requests as cancelled/denied without
-restarting the run.
+one pending approval request at a time. `request_id` is unique. The public
+`AgentRuntime.resolve_approval()` raises `RuntimeError("approval not pending")`
+for unknown or already-resolved ids; an internal decision arriving after
+`abort()` is ignored. `cancel_all()` resolves the pending request as cancelled
+and wakes the executor without restarting the run. Add tests for both the
+public unknown-id error and the internal late-decision race.
 
 - [ ] **Step 4: Implement execution, timeout, and cancellation pipeline**
 
@@ -1211,6 +1213,12 @@ def test_over_budget_removes_complete_turns_only():
 def test_force_under_budget_compacts_when_a_complete_turn_can_be_removed():
     view = TruncatePolicy(budget=1000).prepare(history, system_prompt=SYSTEM, context_window=1000, usage=None, force=True)
     assert view.compacted is True
+
+
+def test_compaction_records_removed_turn_count_and_marker():
+    view = TruncatePolicy(budget=20).prepare(history, system_prompt=SYSTEM, context_window=20, usage=None)
+    assert view.removed_turns >= 1
+    assert any(message.role == "system" and "compacted" in (message.content or "") for message in view.messages)
 
 
 def test_current_turn_overflow_is_reported():
@@ -1390,7 +1398,11 @@ latest usage/context values.
 
 `RuntimeEvent` has `event_id`, `timestamp`, `type`, optional `run_id`/`turn_id`,
 and a Pydantic payload dictionary. Use the approved event names and payload
-minimums from the spec.
+minimums from the spec. Add assertions that `run_started` includes
+`session_id`, `model`, and `policy`; `assistant_delta` includes a non-empty
+`message_id` and `text`; `tool_started` includes `tool_call_id`, `tool_name`,
+and `arguments`; `approval_requested` includes the complete `ApprovalRequest`;
+and `run_finished` includes `outcome` and `steps`.
 
 - [ ] **Step 1: Write runtime lifecycle tests**
 
@@ -1570,6 +1582,20 @@ async def test_app_has_transcript_input_and_statusline():
 
 
 @pytest.mark.asyncio
+async def test_runtime_queue_coalesces_deltas_but_preserves_lifecycle():
+    app = make_app()
+    async with app.run_test() as pilot:
+        app.runtime.emit_many([
+            event("assistant_delta", {"message_id": "m1", "text": "a"}),
+            event("assistant_delta", {"message_id": "m1", "text": "b"}),
+            event("run_finished", {"outcome": "completed", "steps": 1}),
+        ])
+        await pilot.pause()
+        assert app.state.status == "idle"
+        assert "ab" in next(row.text for row in app.state.transcript if row.kind == "assistant")
+
+
+@pytest.mark.asyncio
 async def test_enter_submits_prompt_when_idle():
     app = make_app()
     async with app.run_test() as pilot:
@@ -1659,6 +1685,11 @@ async def test_session_selector_resumes_selected_session():
         await pilot.press("enter")
         await pilot.press("down", "enter")
         assert app.runtime.resume_calls == ["s2"]
+
+
+def test_unknown_command_and_ambiguous_resume_stay_local():
+    assert parse_command("/unknown").name == "unknown"
+    assert parse_command("/resume ab").args == ["ab"]
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -1797,6 +1828,11 @@ python -m coding_agent.app --help
 ```
 
 Expected: all tests pass, lint/format pass, and the CLI prints redacted help.
+Also run `markdownlint docs/superpowers/plans/2026-08-30-coding-agent-mvp.md docs/superpowers/specs/2026-08-30-coding-agent-mvp-design.md`.
+Verify assignment artifacts: `README.txt` is under 1,000 Chinese characters,
+contains the repository URL and run instructions without credentials or
+identity, and the demo MP4 exists, is at most two minutes, and is no larger
+than 200 MB.
 
 - [ ] **Step 7: Commit the wired MVP**
 
