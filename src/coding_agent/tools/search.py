@@ -68,12 +68,12 @@ class _ListTool:
                     p for p in root.iterdir() if p.is_file() and not p.is_symlink()
                 )
             )
+            eligible = (p for p in paths if p.is_file())
             entries = [
                 str(p.relative_to(workspace))
                 if workspace in p.resolve().parents
                 else str(p)
-                for p in islice(paths, args.max_entries + 1)
-                if p.is_file()
+                for p in islice(eligible, args.max_entries + 1)
             ]
             truncated = len(entries) > args.max_entries
             entries = entries[: args.max_entries]

@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from .models import ToolResult, ToolSchema
 from .registry import PermissionMode
 
+MAX_READ_CHARS = 20_000
+
 
 def resolve_tool_path(
     workspace: Path,
@@ -78,12 +80,30 @@ class _ReadTool:
             )
             if signal.is_set():
                 return _result(self.schema.name, False, error="cancelled")
-            lines = path.read_text(encoding="utf-8").splitlines()
-            end = args.end_line or len(lines)
-            if end < args.start_line:
-                return _result(self.schema.name, True, "")
+            selected: list[str] = []
+            size = 0
+            truncated = False
+            with path.open(encoding="utf-8") as stream:
+                for line_number, raw_line in enumerate(stream, 1):
+                    if line_number < args.start_line:
+                        continue
+                    if args.end_line is not None and line_number > args.end_line:
+                        break
+                    line = raw_line.rstrip("\r\n")
+                    added = len(line) + (1 if selected else 0)
+                    if size + added > MAX_READ_CHARS:
+                        remaining = MAX_READ_CHARS - size - (1 if selected else 0)
+                        if remaining > 0:
+                            selected.append(line[:remaining])
+                        truncated = True
+                        break
+                    selected.append(line)
+                    size += added
             return _result(
-                self.schema.name, True, "\n".join(lines[args.start_line - 1 : end])
+                self.schema.name,
+                True,
+                "\n".join(selected),
+                truncated=truncated,
             )
         except Exception as exc:  # noqa: BLE001
             return _result(self.schema.name, False, error=str(exc))

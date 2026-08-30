@@ -58,6 +58,20 @@ async def test_exact_search_and_listing_limits_are_not_marked_truncated(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_recursive_listing_counts_files_not_directories(tmp_path):
+    for index in range(205):
+        (tmp_path / f"dir-{index:03}").mkdir()
+    (tmp_path / "z.txt").write_text("x", encoding="utf-8")
+    result = await make_list_files_tool().execute(
+        {"recursive": True, "max_entries": 1},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.content == "z.txt"
+    assert result.metadata["truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_list_uses_resolved_workspace_for_relative_display(tmp_path, monkeypatch):
     (tmp_path / "only.txt").write_text("x", encoding="utf-8")
     monkeypatch.chdir(tmp_path.parent)

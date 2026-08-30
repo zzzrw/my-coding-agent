@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from coding_agent.tools.filesystem import (
+    MAX_READ_CHARS,
     make_edit_file_tool,
     make_read_file_tool,
     make_write_file_tool,
@@ -20,6 +21,19 @@ async def test_read_file_is_line_bounded(tmp_path):
     )
     assert result.ok is True
     assert result.content == "b"
+
+
+@pytest.mark.asyncio
+async def test_read_file_default_output_is_bounded(tmp_path):
+    (tmp_path / "large.txt").write_text("x" * (MAX_READ_CHARS + 100), encoding="utf-8")
+    result = await make_read_file_tool().execute(
+        {"path": "large.txt"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert len(result.content) == MAX_READ_CHARS
+    assert result.metadata["truncated"] is True
 
 
 @pytest.mark.asyncio

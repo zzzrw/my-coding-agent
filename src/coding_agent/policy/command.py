@@ -1,5 +1,6 @@
 import re
 import shlex
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -30,7 +31,7 @@ _SHELL_SYNTAX = re.compile(
 
 def _rm_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
-        if token != "rm":
+        if Path(token).name != "rm":
             continue
         operands = [
             item
@@ -42,10 +43,19 @@ def _rm_is_catastrophic(tokens: list[str]) -> bool:
         if any(
             item == "/"
             or item == "~"
-            or item.startswith(("/*", "/home", "/root", "~/"))
+            or item in {"$HOME", "${HOME}"}
+            or item.startswith(("/*", "/home", "/root", "~/", "$HOME/", "${HOME}/"))
             for item in operands
         ):
             return True
+    return False
+
+
+def _git_push_is_catastrophic(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if Path(token).name != "git" or tokens[index + 1 : index + 2] != ["push"]:
+            continue
+        return any(item == "-f" or item.startswith("--force") for item in tokens[index + 2 :])
     return False
 
 
@@ -54,7 +64,7 @@ def classify_command(command: str) -> CommandClassification:
         tokens = shlex.split(command)
     except ValueError:
         tokens = []
-    if _rm_is_catastrophic(tokens):
+    if _rm_is_catastrophic(tokens) or _git_push_is_catastrophic(tokens):
         return CommandClassification(catastrophic=True, reason="catastrophic command")
     for pattern in _CATASTROPHIC:
         if re.search(pattern, command, re.IGNORECASE):
