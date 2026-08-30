@@ -30,6 +30,14 @@ async def test_run_command_timeout_returns_bounded_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_default_timeout_is_120_seconds(tmp_path):
+    assert (
+        make_run_command_tool().args_model.model_fields["timeout_seconds"].default
+        == 120
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_command_cancellation_kills_process_group(tmp_path):
     cancel = asyncio.Event()
     task = asyncio.create_task(

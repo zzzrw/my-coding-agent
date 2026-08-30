@@ -22,6 +22,12 @@ def test_default_allows_read_and_asks_for_mutations():
         policy.decide(WRITE, {"path": "a"}, workspace=Path("."), mode="default").kind
         == "ask"
     )
+    assert (
+        policy.decide(
+            READ, {"path": "/tmp/out"}, workspace=Path("."), mode="default"
+        ).kind
+        == "ask"
+    )
 
 
 def test_workspace_allows_internal_write_but_asks_for_outside_path(tmp_path):
@@ -58,7 +64,13 @@ def test_unknown_workspace_shell_requires_approval():
 
 def test_catastrophic_command_patterns_are_always_denied():
     policy = DefaultApprovalPolicy()
-    for command in ("mkfs.ext4 /dev/sda", "git reset --hard HEAD", "shutdown now"):
+    for command in (
+        "mkfs.ext4 /dev/sda",
+        "git reset --hard HEAD",
+        "shutdown now",
+        "rm -- -rf /",
+        "rm --recursive --force /",
+    ):
         assert (
             policy.decide(
                 SHELL, {"command": command}, workspace=Path("."), mode="full"

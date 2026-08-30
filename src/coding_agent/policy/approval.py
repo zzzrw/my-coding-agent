@@ -70,6 +70,13 @@ class DefaultApprovalPolicy:
             except OSError:
                 outside = True
         if mode == "default":
+            if outside:
+                return PermissionDecision(
+                    kind="ask",
+                    reason="path is outside workspace",
+                    category="outside_path",
+                    allow_outside_once=True,
+                )
             return PermissionDecision(
                 kind="ask" if mutating else "allow",
                 reason="mutation requires approval" if mutating else "read-only tool",

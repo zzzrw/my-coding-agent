@@ -21,12 +21,14 @@ SKIP_DIRS = {
 class _ListArgs(BaseModel):
     path: str = "."
     max_entries: int = Field(default=200, ge=1, le=2000)
+    recursive: bool = True
 
 
 class _GrepArgs(BaseModel):
     pattern: str
     path: str = "."
     max_results: int = Field(default=100, ge=1, le=1000)
+    include: str | None = None
 
 
 def _files(root: Path):
@@ -57,9 +59,18 @@ class _ListTool:
                 permission_mode=context.permission_mode,
                 allow_outside_once=context.allow_outside_once,
             )
+            paths = (
+                _files(root)
+                if args.recursive
+                else sorted(
+                    p for p in root.iterdir() if p.is_file() and not p.is_symlink()
+                )
+            )
             entries = [
                 str(p.relative_to(context.workspace))
-                for p in _files(root)
+                if context.workspace.resolve() in p.resolve().parents
+                else str(p)
+                for p in paths
                 if p.is_file()
             ][: args.max_entries]
             return _result(
@@ -96,6 +107,8 @@ class _GrepTool:
                 if signal.is_set():
                     return _result(self.schema.name, False, error="cancelled")
                 if not path.is_file():
+                    continue
+                if args.include and not path.match(args.include):
                     continue
                 try:
                     text = path.read_text(encoding="utf-8")

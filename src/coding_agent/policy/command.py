@@ -10,7 +10,7 @@ class CommandClassification(BaseModel):
 
 
 _CATASTROPHIC = [
-    r"rm\s+(-[rf]+\s+)*[/~]",
+    r"rm\s+(?:(?:-[rf]+|--(?:recursive|force))\s+|--\s+)*[/~]",
     r"\bmkfs(?:\.|\s)",
     r"\bdd\s+.*of=/dev/",
     r"\b(shutdown|reboot|poweroff)\b",

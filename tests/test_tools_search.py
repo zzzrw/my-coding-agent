@@ -38,3 +38,22 @@ async def test_search_results_are_bounded_and_sorted(tmp_path):
     )
     assert result.ok and result.metadata["truncated"] is True
     assert result.content.startswith("a.txt:1:")
+
+
+@pytest.mark.asyncio
+async def test_search_supports_non_recursive_and_include_filter(tmp_path):
+    (tmp_path / "top.py").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "top.txt").write_text("needle\n", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "deep.py").write_text("needle\n", encoding="utf-8")
+    context = ToolContext(workspace=tmp_path, permission_mode="full")
+    listing = await make_list_files_tool().execute(
+        {"recursive": False}, context=context, signal=asyncio.Event()
+    )
+    result = await make_grep_files_tool().execute(
+        {"pattern": "needle", "include": "*.py"},
+        context=context,
+        signal=asyncio.Event(),
+    )
+    assert "top.py" in listing.content and "deep.py" not in listing.content
+    assert "top.py" in result.content and "top.txt" not in result.content

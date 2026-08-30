@@ -11,7 +11,7 @@ from .models import ToolSchema
 
 class _ShellArgs(BaseModel):
     command: str
-    timeout_seconds: float = Field(default=30, gt=0, le=300)
+    timeout_seconds: float = Field(default=120, gt=0, le=300)
 
 
 class _ShellTool:
@@ -40,10 +40,10 @@ class _ShellTool:
                 if time.monotonic() - started >= args.timeout_seconds:
                     os.killpg(proc.pid, signal_mod.SIGTERM)
                     try:
-                        await asyncio.wait_for(communicate, 1.0)
+                        await asyncio.wait_for(asyncio.shield(communicate), 1.0)
                     except TimeoutError:
                         os.killpg(proc.pid, signal_mod.SIGKILL)
-                        await communicate
+                        await asyncio.shield(communicate)
                     return _result(
                         self.schema.name,
                         False,
@@ -53,10 +53,10 @@ class _ShellTool:
                 if signal.is_set():
                     os.killpg(proc.pid, signal_mod.SIGTERM)
                     try:
-                        await asyncio.wait_for(communicate, 1.0)
+                        await asyncio.wait_for(asyncio.shield(communicate), 1.0)
                     except TimeoutError:
                         os.killpg(proc.pid, signal_mod.SIGKILL)
-                        await communicate
+                        await asyncio.shield(communicate)
                     return _result(
                         self.schema.name,
                         False,
