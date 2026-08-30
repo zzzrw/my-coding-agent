@@ -101,7 +101,12 @@ class SessionStore:
 
     @property
     def header(self) -> SessionHeader:
-        return self._header
+        if not self._records:
+            return self._header
+        latest = max(record.timestamp for record in self._records)
+        if latest <= self._header.updated_at:
+            return self._header
+        return self._header.model_copy(update={"updated_at": latest})
 
     @property
     def load_notice(self) -> str | None:

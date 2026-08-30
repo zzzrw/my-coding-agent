@@ -113,6 +113,15 @@ def test_open_rejects_broken_sequence_chain(tmp_path):
         SessionStore.open(tmp_path, store.session_id)
 
 
+def test_reopened_header_reflects_latest_append_timestamp(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    created = store.header.updated_at
+    store.append_new("user_message", {"message": Message(role="user", content="x")})
+    reopened = SessionStore.open(tmp_path, store.session_id)
+    assert reopened.header.updated_at >= created
+    assert reopened.header.updated_at == reopened.records()[-1].timestamp
+
+
 def test_open_turn_is_interrupted_without_replay(tmp_path):
     store = SessionStore.create(
         tmp_path, workspace=str(tmp_path), model="fake", context_window=1000
