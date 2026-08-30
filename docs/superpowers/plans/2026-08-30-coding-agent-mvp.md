@@ -2013,9 +2013,21 @@ Use a temporary directory containing a small starter project, for example an
 HTML/CSS/JavaScript page with one deliberate test or behavior defect. Do not
 use personal paths or identifying content in the recording.
 
-- [ ] **Step 2: Run the TUI with an approved local model configuration**
+- [ ] **Step 2: Verify the real DeepSeek model path before recording**
 
-Run: `coding-agent --workspace /path/to/demo --model <model>`
+First run the opt-in provider smoke test with a process-scoped key:
+
+```bash
+RUN_LIVE_LLM_TESTS=1 DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  pytest -m live tests/test_live_provider.py -q
+```
+
+Then run `coding-agent --workspace /path/to/demo --model deepseek-chat` with
+the same process-scoped `DEEPSEEK_API_KEY` and the configured DeepSeek
+OpenAI-compatible base URL. In the TUI, complete at least one real read or
+write tool call and one real `run_command`, verifying the streamed response,
+tool result, persisted session record, and resulting workspace file. Do not
+record the key, environment dump, request headers, or sensitive response data.
 
 Verify the bottom statusline shows model, context, workspace, branch/session,
 policy, and status. Verify the transcript scrolls, the TextArea accepts a
