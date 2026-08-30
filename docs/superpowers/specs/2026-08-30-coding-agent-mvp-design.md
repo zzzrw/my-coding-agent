@@ -216,6 +216,17 @@ class ContextView(BaseModel):
     compacted: bool
     removed_turns: int = 0
     overflow: bool = False
+
+class SessionHeader(BaseModel):
+    kind: Literal["header"] = "header"
+    schema_version: int = 1
+    session_id: str
+    workspace: str
+    model: str
+    title: str = "New session"
+    created_at: datetime
+    updated_at: datetime
+    context_window: int
 ```
 
 When a provider does not report a reasoning level or context window, the

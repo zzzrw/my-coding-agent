@@ -28,6 +28,12 @@
 - Automated tests use Fake Provider and temporary workspaces. Real API calls are manual acceptance only.
 - Keep assignment credentials out of Git, README files, and video; preserve double-blind anonymity in all deliverables.
 
+Every implementation commit must use the repository Lore format. The short
+intent line may match the task title, but the commit body must include all of:
+`Constraint:`, `Rejected:`, `Confidence:`, `Scope-risk:`, `Directive:`,
+`Tested:`, and `Not-tested:`. The command examples below use that convention;
+the executor should fill the exact test names from the completed step.
+
 ---
 
 ## File Map
@@ -40,14 +46,18 @@ src/coding_agent/
 ├── __init__.py
 ├── app.py
 ├── runtime/
+│   ├── __init__.py
 │   ├── models.py
 │   ├── events.py
+│   ├── hooks.py
 │   ├── runner.py
 │   └── runtime.py
 ├── llm/
+│   ├── __init__.py
 │   ├── protocol.py
 │   └── openai_compatible.py
 ├── tools/
+│   ├── __init__.py
 │   ├── models.py
 │   ├── registry.py
 │   ├── executor.py
@@ -55,15 +65,19 @@ src/coding_agent/
 │   ├── search.py
 │   └── shell.py
 ├── session/
+│   ├── __init__.py
 │   ├── models.py
 │   └── store.py
 ├── context/
+│   ├── __init__.py
 │   ├── policy.py
 │   └── truncate.py
 ├── policy/
+│   ├── __init__.py
 │   ├── approval.py
 │   └── command.py
 └── tui/
+    ├── __init__.py
     ├── app.py
     ├── state.py
     ├── reducer.py
@@ -102,8 +116,10 @@ tests/fakes.py:
     FakeProvider(events), RepeatingToolProvider(tool_name),
     BlockingFakeProvider(), ApprovalBlockingProvider(),
     FakeTool(name), RecordingTool(name), FailingTool(), LargeOutputTool()
+    SlowTool()
     assistant_with_tool(name, arguments), assistant_text(text),
-    assistant_with_finish_reason(reason)
+    assistant_with_finish_reason(reason), assistant_with_truncated_tool_call(name),
+    malformed_tool_call(name, raw_arguments)
 
 tests/test_context.py:
     history, large_current_turn, SYSTEM, contains_dangling_tool_result()
@@ -124,6 +140,16 @@ tests/test_reducer.py:
 
 tests/test_tui.py:
     make_app(session_summaries=None), summary(session_id)
+
+tests/test_policy.py:
+    read_schema, write_schema, shell_schema
+
+tests/test_models.py:
+    SYSTEM and model fixtures are local to the relevant test module.
+
+tests/test_runner.py:
+    make_runner() seeds the prompt record because AgentRuntime, not
+    AgentRunner.run_turn(), owns the initial user_message append.
 ```
 
 Each helper must be implemented before the test that first uses it and must
@@ -135,6 +161,13 @@ Pilot test helper.
 **Files:**
 - Create: `pyproject.toml`
 - Create: `src/coding_agent/__init__.py`
+- Create: `src/coding_agent/runtime/__init__.py`
+- Create: `src/coding_agent/llm/__init__.py`
+- Create: `src/coding_agent/tools/__init__.py`
+- Create: `src/coding_agent/session/__init__.py`
+- Create: `src/coding_agent/context/__init__.py`
+- Create: `src/coding_agent/policy/__init__.py`
+- Create: `src/coding_agent/tui/__init__.py`
 - Create: `tests/conftest.py`
 - Test: `tests/test_bootstrap.py`
 
@@ -195,7 +228,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
 
-Create `src/coding_agent/__init__.py` with `__version__ = "0.1.0"`.
+Create `src/coding_agent/__init__.py` with `__version__ = "0.1.0"` and empty
+subpackage `__init__.py` files so every planned import path is an explicit
+package.
 
 - [ ] **Step 4: Run the test and package checks**
 
@@ -211,19 +246,21 @@ Expected: PASS once the empty package is checked.
 
 ```bash
 git add pyproject.toml src/coding_agent/__init__.py tests/conftest.py tests/test_bootstrap.py
-git commit -m "Bootstrap Python coding agent package"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 2: Define Pydantic Domain Contracts
 
 **Files:**
 - Create: `src/coding_agent/runtime/models.py`
+- Create: `src/coding_agent/runtime/events.py`
 - Create: `src/coding_agent/tools/models.py`
 - Create: `src/coding_agent/session/models.py`
 - Test: `tests/test_models.py`
+- Test: `tests/test_events.py`
 
 **Interfaces:**
-- Produces `Message`, `ToolCall`, `Usage`, `LLMEvent`, `ToolSchema`, `ToolResult`, `SessionRecord`, `SessionMessage`, `ContextView`, `SessionSummary`, and `ApprovalRequest`.
+- Produces `Message`, `ToolCall`, `Usage`, `LLMEvent`, `ToolSchema`, `ToolResult`, `SessionHeader`, `SessionRecord`, `SessionMessage`, `ContextView`, `SessionSummary`, `ApprovalRequest`, `RuntimeEvent`, and `EventSink` before any runner or UI task begins.
 - Later tasks import these models instead of creating ad hoc dictionaries.
 
 - [ ] **Step 1: Write model validation tests**
@@ -323,6 +360,27 @@ class TurnOutcome(BaseModel):
     usage: Usage | None = None
 ```
 
+Define the persisted session header separately from conversation records:
+
+```python
+class SessionHeader(BaseModel):
+    kind: Literal["header"] = "header"
+    schema_version: int = 1
+    session_id: str
+    workspace: str
+    model: str
+    title: str = "New session"
+    created_at: datetime
+    updated_at: datetime
+    context_window: int
+```
+
+Define `RuntimeEvent` with the approved event literal set and define
+`EventSink = Callable[[RuntimeEvent], Awaitable[None]]` in
+`runtime/events.py`. Add an event-envelope validation test in
+`tests/test_events.py`; Task 10 can then consume this module without a
+temporary contract.
+
 - [ ] **Step 4: Run tests and type/lint checks**
 
 Run: `pytest tests/test_models.py -q`
@@ -333,11 +391,15 @@ Run: `ruff check src/coding_agent/runtime src/coding_agent/tools src/coding_agen
 
 Expected: PASS.
 
+Run: `pytest tests/test_events.py -q`
+
+Expected: PASS; the event contract is now available to later tasks.
+
 - [ ] **Step 5: Commit the contracts**
 
 ```bash
-git add src/coding_agent/runtime/models.py src/coding_agent/tools/models.py src/coding_agent/session/models.py tests/test_models.py
-git commit -m "Define coding agent domain models"
+git add src/coding_agent/runtime/models.py src/coding_agent/runtime/events.py src/coding_agent/tools/models.py src/coding_agent/session/models.py tests/test_models.py tests/test_events.py
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 3: Implement the Provider Boundary and Fake Provider
@@ -369,22 +431,28 @@ class LLMProvider(Protocol):
 `response_end`, and `error` events. `FakeProvider` yields a configured event
 sequence and records every request for deterministic assertions.
 
+The parser keeps a map from stream `index` to call id. A later chunk that has
+only an index reuses the id/name from `tool_call_start`. `[DONE]` closes the
+stream without fabricating content. A final usage chunk is attached to
+`response_end`. A `finish_reason="length"` is preserved so the runner can
+reject every incomplete tool call.
+
 - [ ] **Step 1: Write provider conversion tests**
 
 ```python
 import asyncio
 
-from coding_agent.llm.openai_compatible import parse_chat_chunk
+from coding_agent.llm.openai_compatible import ChatChunkParser
 from coding_agent.runtime.models import LLMEvent
 
 
 def test_text_chunk_becomes_text_delta():
-    event = parse_chat_chunk({"choices": [{"delta": {"content": "hello"}}]})
+    event = ChatChunkParser().parse({"choices": [{"delta": {"content": "hello"}}]})
     assert event == LLMEvent(type="text_delta", text="hello")
 
 
 def test_tool_argument_chunks_preserve_call_identity():
-    event = parse_chat_chunk(
+    event = ChatChunkParser().parse(
         {
             "choices": [
                 {
@@ -406,6 +474,25 @@ def test_tool_argument_chunks_preserve_call_identity():
     assert event.arguments_delta == '{"pa'
 
 
+def test_tool_start_and_end_events_are_explicit():
+    parser = ChatChunkParser()
+    start = parser.parse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "read_file"}}]}}]})
+    end = parser.parse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+    assert start.type == "tool_call_start"
+    assert start.tool_call_id == "c1"
+    assert end.type == "tool_call_end"
+
+
+def test_malformed_tool_arguments_are_reported_by_aggregation_fixture():
+    provider = FakeProvider([
+        LLMEvent(type="tool_call_start", tool_call_id="c1", tool_name="read_file"),
+        LLMEvent(type="tool_call_delta", tool_call_id="c1", arguments_delta='{"path":'),
+        LLMEvent(type="response_end", finish_reason="tool_calls"),
+    ])
+    assert provider.events[1].arguments_delta == '{"path":'
+
+
+@pytest.mark.asyncio
 async def test_fake_provider_yields_events_without_network():
     provider = FakeProvider([
         LLMEvent(type="text_delta", text="done"),
@@ -443,7 +530,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/llm tests/fakes.py tests/test_provider.py
-git commit -m "Add streaming provider boundary"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 4: Build the JSONL Session Store and Message Projection
@@ -454,15 +541,26 @@ git commit -m "Add streaming provider boundary"
 - Test: `tests/test_session.py`
 
 **Interfaces:**
-- Consumes: `SessionRecord`, `SessionMessage`, `Message`, `SessionSummary`.
+- Consumes: `SessionHeader`, `SessionRecord`, `SessionMessage`, `Message`, and `SessionSummary`.
 - Produces:
 
 ```python
 class SessionStore:
     @classmethod
-    def create(cls, root: Path, *, session_id: str | None = None, workspace: str) -> "SessionStore": ...
+    def create(
+        cls,
+        root: Path,
+        *,
+        session_id: str | None = None,
+        workspace: str,
+        model: str,
+        context_window: int,
+        title: str = "New session",
+    ) -> "SessionStore": ...
     @classmethod
     def open(cls, root: Path, session_id: str) -> "SessionStore": ...
+    @property
+    def header(self) -> SessionHeader: ...
     def append(self, record: SessionRecord) -> None: ...
     def append_new(
         self,
@@ -478,15 +576,21 @@ class SessionStore:
     def list_sessions(cls, root: Path) -> list[SessionSummary]: ...
 ```
 
-The store writes one JSON object per line through a single append method. It
-assigns monotonically increasing `seq` values and parent ids when the caller
-does not provide them, flushes the append, and rejects malformed records.
+The store file is `<session_root>/<session_id>.jsonl`; test fixtures use a
+separate `session_root` and workspace directory so session files are never
+inside the project being edited. The first line is a
+validated `SessionHeader` object with `kind="header"`; subsequent lines are
+`SessionRecord` objects. The store writes one JSON object per line through a
+single append method, assigns monotonically increasing `seq` values and parent
+ids, flushes the append, and rejects malformed records. The header is the
+source for `workspace`, `model`, `title`, timestamps, and `context_window` used
+by `list_sessions()` and `resume()`.
 
 - [ ] **Step 1: Write session tests**
 
 ```python
 def test_append_assigns_sequence_and_parent(tmp_path):
-    store = SessionStore.create(tmp_path, workspace=str(tmp_path))
+    store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
     first = store.append_new("user_message", {"message": Message(role="user", content="hi")})
     second = store.append_new("turn_start", {"turn_id": "t1"})
     assert first.seq == 0
@@ -494,8 +598,23 @@ def test_append_assigns_sequence_and_parent(tmp_path):
     assert second.parent_id == first.id
 
 
+def test_header_round_trips_workspace_model_title_and_window(tmp_path):
+    store = SessionStore.create(
+        tmp_path,
+        workspace=str(tmp_path),
+        model="fake-model",
+        context_window=128_000,
+        title="Demo page",
+    )
+    reopened = SessionStore.open(tmp_path, store.session_id)
+    assert reopened.header.workspace == str(tmp_path)
+    assert reopened.header.model == "fake-model"
+    assert reopened.header.title == "Demo page"
+    assert reopened.header.context_window == 128_000
+
+
 def test_projection_does_not_duplicate_audit_tool_call(tmp_path):
-    store = SessionStore.create(tmp_path, workspace=str(tmp_path))
+    store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
     assistant = Message(
         role="assistant",
         tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})],
@@ -511,8 +630,24 @@ def test_projection_does_not_duplicate_audit_tool_call(tmp_path):
     assert [item.message.role for item in projected] == ["assistant", "tool"]
 
 
+def test_projection_rejects_duplicate_or_unmatched_tool_results(tmp_path):
+    store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
+    assistant = Message(
+        role="assistant",
+        tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})],
+    )
+    store.append_new("assistant_message", {"message": assistant, "complete": True}, turn_id="t1")
+    store.append_new(
+        "tool_result",
+        {"result": ToolResult(tool_call_id="unknown", tool_name="read_file", ok=True, content="x")},
+        turn_id="t1",
+    )
+    with pytest.raises(ValueError, match="tool_result"):
+        store.project_messages()
+
+
 def test_open_turn_is_marked_interrupted_without_replay(tmp_path):
-    store = SessionStore.create(tmp_path, workspace=str(tmp_path))
+    store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
     store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
     reopened = SessionStore.open(tmp_path, store.session_id)
     assert reopened.has_interrupted_turn()
@@ -528,10 +663,15 @@ Expected: FAIL because `SessionStore` is not implemented.
 - [ ] **Step 3: Implement append, load, and list behavior**
 
 Use a per-store lock around append. Store files under a user/session directory,
-not inside the target workspace. `list_sessions()` reads only valid headers,
-sorts by `updated_at` descending, and returns a bounded title derived from the
-first user prompt. A malformed final JSONL line is ignored and reported as an
-interrupted/corrupt notice; earlier valid records remain usable.
+not inside the target workspace. The first JSONL line is a `SessionHeader` with
+`kind="header"`, `schema_version`, `session_id`, `workspace`, `model`, `title`,
+`created_at`, `updated_at`, and `context_window`; each later line is a
+`SessionRecord`. `list_sessions()` reads only valid headers, sorts by
+`updated_at` descending, and returns a bounded title derived from the first user
+prompt when the header still has the default title. A malformed final JSONL
+line is ignored and reported as an interrupted/corrupt notice; earlier valid
+records remain usable. Invalid headers fail closed and are excluded from the
+selector.
 
 - [ ] **Step 4: Implement projection invariants**
 
@@ -550,7 +690,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/session tests/test_session.py
-git commit -m "Add JSONL session persistence and projection"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 5: Implement Tool Registry and Tool Context
@@ -572,6 +712,7 @@ class ToolContext(BaseModel):
 
 class Tool(Protocol):
     schema: ToolSchema
+    args_model: type[BaseModel]
     async def execute(
         self,
         arguments: dict[str, Any],
@@ -616,7 +757,9 @@ Expected: FAIL because registry modules do not exist.
 
 - [ ] **Step 3: Implement registry and context**
 
-Use a private ordered dictionary keyed by tool name. Return defensive copies of
+Use a private ordered dictionary keyed by tool name. Each tool's
+`args_model` is the Pydantic class used to validate raw arguments; its JSON
+schema is exposed through `ToolSchema.parameters`. Return defensive copies of
 schema lists. Do not execute tools from the registry; execution belongs to
 Task 8's `ToolExecutor`.
 
@@ -628,7 +771,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/tools/registry.py src/coding_agent/tools/models.py tests/test_registry.py
-git commit -m "Add tool registry contracts"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 6: Implement Filesystem and Search Tools
@@ -636,12 +779,14 @@ git commit -m "Add tool registry contracts"
 **Files:**
 - Create: `src/coding_agent/tools/filesystem.py`
 - Create: `src/coding_agent/tools/search.py`
+- Create: `src/coding_agent/tools/shell.py`
 - Test: `tests/test_tools_filesystem.py`
 - Test: `tests/test_tools_search.py`
+- Test: `tests/test_tools_shell.py`
 
 **Interfaces:**
 - Consumes: `Tool`, `ToolContext`, `ToolSchema`, and `ToolResult`.
-- Produces six tool factories, with this task implementing four:
+- Produces all six built-in tool factories:
 
 ```python
 def make_read_file_tool() -> Tool: ...
@@ -649,6 +794,7 @@ def make_write_file_tool() -> Tool: ...
 def make_edit_file_tool() -> Tool: ...
 def make_list_files_tool() -> Tool: ...
 def make_grep_files_tool() -> Tool: ...
+def make_run_command_tool() -> Tool: ...
 ```
 
 Use one path helper:
@@ -717,11 +863,23 @@ async def test_list_and_grep_skip_build_directories(tmp_path):
     assert "node_modules" not in listing.content
     assert "src/main.py" in matches.content
     assert "ignored.js" not in matches.content
+
+
+@pytest.mark.asyncio
+async def test_run_command_uses_workspace_cwd_and_timeout(tmp_path):
+    result = await make_run_command_tool().execute(
+        {"command": "pwd", "timeout_seconds": 5},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert str(tmp_path) in result.content
+    assert result.metadata["exit_code"] == 0
 ```
 
 - [ ] **Step 2: Run tests and verify they fail**
 
-Run: `pytest tests/test_tools_filesystem.py tests/test_tools_search.py -q`
+Run: `pytest tests/test_tools_filesystem.py tests/test_tools_search.py tests/test_tools_shell.py -q`
 
 Expected: FAIL because the tool factories do not exist.
 
@@ -732,6 +890,10 @@ Expected: FAIL because the tool factories do not exist.
 `edit_file` refuses zero or multiple matches. For `default`/`workspace`, an
 outside path fails until `allow_outside_once=True`; `full` accepts it.
 
+`run_command` executes `/bin/sh -c` with `cwd=context.workspace`, captures
+stdout/stderr, returns exit code and elapsed time, applies the per-call timeout,
+and starts a process group so cancellation can terminate descendants.
+
 - [ ] **Step 4: Implement bounded list and grep**
 
 Use deterministic sorted traversal, skip `.git`, `node_modules`, virtualenvs,
@@ -740,13 +902,13 @@ skip binary files, cap entries/results, and return structured errors.
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `pytest tests/test_tools_filesystem.py tests/test_tools_search.py -q`
+Run: `pytest tests/test_tools_filesystem.py tests/test_tools_search.py tests/test_tools_shell.py -q`
 
 Expected: PASS.
 
 ```bash
-git add src/coding_agent/tools/filesystem.py src/coding_agent/tools/search.py tests/test_tools_filesystem.py tests/test_tools_search.py
-git commit -m "Add safe filesystem and search tools"
+git add src/coding_agent/tools/filesystem.py src/coding_agent/tools/search.py src/coding_agent/tools/shell.py tests/test_tools_filesystem.py tests/test_tools_search.py tests/test_tools_shell.py
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 7: Implement Command Classification and Permission Modes
@@ -779,6 +941,13 @@ class ApprovalPolicy(Protocol):
         workspace: Path,
         mode: PermissionMode,
     ) -> PermissionDecision: ...
+
+class CommandClassification(BaseModel):
+    catastrophic: bool = False
+    outside_or_unknown: bool = False
+    reason: str = ""
+
+def classify_command(command: str) -> CommandClassification: ...
 ```
 
 - [ ] **Step 1: Write policy tests**
@@ -842,13 +1011,14 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/policy tests/test_policy.py
-git commit -m "Add permission modes and command policy"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 8: Implement ToolExecutor and Approval Broker
 
 **Files:**
 - Create: `src/coding_agent/tools/executor.py`
+- Create: `src/coding_agent/runtime/hooks.py`
 - Modify: `src/coding_agent/runtime/models.py`
 - Test: `tests/test_executor.py`
 
@@ -862,6 +1032,15 @@ class ApprovalBroker(Protocol):
     def cancel_all(self) -> None: ...
 
 class ToolExecutor:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        policy: ApprovalPolicy,
+        broker: ApprovalBroker,
+        hooks: HookSet | None = None,
+        default_timeout_seconds: float = 120.0,
+    ) -> None: ...
+
     async def execute(
         self,
         call: ToolCall,
@@ -873,12 +1052,24 @@ class ToolExecutor:
     ) -> ToolResult: ...
 ```
 
+`runtime/hooks.py` defines the minimum non-plugin hook set: async
+`before_model`, `before_tool`, `after_tool`, and `on_error` callbacks. A hook
+may return a replacement or rejection value, but hook execution is ordered and
+does not create a dynamic plugin lifecycle.
+
 Expose `MAX_TOOL_OUTPUT_CHARS` as the single result cap used by the executor
 and its tests.
 
 `AgentRuntime` supplies the broker. The executor is the only path that calls a
 tool and performs argument validation, policy, approval, timeout, cancellation,
 exception conversion, after-hook, and output truncation.
+
+Outside-path approval is represented only by
+`PermissionDecision.allow_outside_once=True`. After the broker approves that
+request, `ToolExecutor` copies the active context with
+`ToolContext.allow_outside_once=True` for that exact call. The flag is neither
+stored globally nor reused by a later call; `resolve_tool_path` only consumes
+the flag and never asks for approval itself.
 
 - [ ] **Step 1: Write executor tests**
 
@@ -907,6 +1098,16 @@ async def test_denied_approval_does_not_call_tool():
 
 
 @pytest.mark.asyncio
+async def test_approved_outside_path_is_one_call_only():
+    tool = RecordingTool("write_file")
+    executor = make_executor(tool, approval_answer="approve")
+    call = ToolCall(id="c1", name="write_file", arguments={"path": "../outside", "content": "x"})
+    result = await executor.execute(call, run_id="r1", workspace=Path("/tmp/project"), permission_mode="workspace", signal=asyncio.Event())
+    assert result.ok is True
+    assert tool.calls == [{"path": "../outside", "content": "x"}]
+
+
+@pytest.mark.asyncio
 async def test_output_is_bounded():
     result = await make_executor(LargeOutputTool()).execute(
         ToolCall(id="c1", name="read_file", arguments={}),
@@ -914,6 +1115,21 @@ async def test_output_is_bounded():
     )
     assert len(result.content) <= MAX_TOOL_OUTPUT_CHARS
     assert result.metadata["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_abort_cancels_a_slow_tool_and_returns_cancelled_error():
+    signal = asyncio.Event()
+    executor = make_executor(SlowTool())
+    task = asyncio.create_task(executor.execute(
+        ToolCall(id="c1", name="slow", arguments={}),
+        run_id="r1", workspace=Path("."), permission_mode="full", signal=signal,
+    ))
+    await asyncio.sleep(0)
+    signal.set()
+    result = await task
+    assert result.ok is False
+    assert result.metadata["cancelled"] is True
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -922,20 +1138,24 @@ Run: `pytest tests/test_executor.py -q`
 
 Expected: FAIL because executor and broker do not exist.
 
-- [ ] **Step 3: Implement approval request and broker**
+- [ ] **Step 3: Implement hook set, approval request, and broker**
 
-Use one pending request at a time. `request_id` is unique. Unknown or already
+Implement `HookSet` with ordered async callbacks and default no-op hooks. Use
+one pending approval request at a time. `request_id` is unique. Unknown or already
 resolved ids return a structured runtime error; late decisions after abort are
 ignored. `cancel_all()` resolves pending requests as cancelled/denied without
 restarting the run.
 
-- [ ] **Step 4: Implement execution pipeline**
+- [ ] **Step 4: Implement execution, timeout, and cancellation pipeline**
 
 Resolve the tool, validate its arguments with its Pydantic args model, call the
 approval policy, request approval when needed, construct `ToolContext` with a
 one-call outside override when approved, execute with a timeout, catch every
-exception, invoke the optional after hook, and truncate combined output. Never
-raise ordinary tool errors to `AgentRunner`.
+exception, invoke the before/after hooks, and truncate combined output. Wrap
+each tool in `asyncio.wait_for`; classify timeout as a bounded error result.
+`run_command` must create a process group, send SIGTERM on cancellation, then
+SIGKILL after a short grace period, and await process cleanup. Never raise
+ordinary tool errors to `AgentRunner`.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -945,7 +1165,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/tools/executor.py src/coding_agent/runtime/models.py tests/test_executor.py
-git commit -m "Add guarded tool execution and approvals"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 9: Implement Deterministic ContextPolicy
@@ -1027,18 +1247,17 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/context tests/test_context.py
-git commit -m "Add turn-aligned context truncation"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 10: Implement the Pi-Style AgentRunner
 
 **Files:**
 - Create: `src/coding_agent/runtime/runner.py`
-- Modify: `src/coding_agent/runtime/models.py`
 - Test: `tests/test_runner.py`
 
 **Interfaces:**
-- Consumes: `LLMProvider`, `ToolRegistry`, `ToolExecutor`, `ContextPolicy`, `SessionStore`, system prompt, and an event emitter.
+- Consumes: `LLMProvider`, `ToolRegistry`, `ToolExecutor`, `ContextPolicy`, `SessionStore`, `RuntimeEvent`, `EventSink`, system prompt, and an event emitter from Tasks 2, 4, 8, and 9.
 - Produces:
 
 ```python
@@ -1079,12 +1298,24 @@ async def test_max_steps_stops_repeating_tool_calls():
 
 @pytest.mark.asyncio
 async def test_truncated_tool_call_is_not_executed():
-    provider = FakeProvider([assistant_with_finish_reason("length")])
+    provider = FakeProvider([assistant_with_truncated_tool_call("write_file")])
     tool = RecordingTool("write_file")
     runner = make_runner(provider, tools=[tool])[0]
     outcome = await runner.run_turn("write", run_id="r1", turn_id="t1", signal=asyncio.Event())
     assert tool.calls == []
-    assert outcome.reason in {"completed", "max_steps"}
+    assert outcome.reason == "completed"
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_tool_call_is_returned_to_model_as_error():
+    provider = FakeProvider([
+        malformed_tool_call("read_file", '{"path":'),
+        assistant_text("I could not parse the tool arguments."),
+    ])
+    runner = make_runner(provider)[0]
+    outcome = await runner.run_turn("read", run_id="r1", turn_id="t1", signal=asyncio.Event())
+    assert outcome.reason == "completed"
+    assert any(message.role == "tool" and "invalid" in (message.content or "") for message in runner.store.project_messages())
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -1095,11 +1326,12 @@ Expected: FAIL because `AgentRunner` does not exist.
 
 - [ ] **Step 3: Implement the step loop and stream aggregation**
 
-For every step, load projected history, call `ContextPolicy.prepare`, prepend
-the system prompt, collect schemas, consume provider events, append text to one
-assistant buffer, and aggregate tool argument fragments by call id. Parse and
-validate arguments only after `response_end`. Emit runtime events through an
-injected callback.
+For every step, load projected history, call `ContextPolicy.prepare` with the
+configured system prompt, collect schemas, consume provider events, append text
+to one assistant buffer, and aggregate tool argument fragments by call id.
+Parse and validate arguments only after `response_end`. Emit the Task 2
+`RuntimeEvent` values through the injected `EventSink`; do not define a second
+event type in the runner.
 
 - [ ] **Step 4: Persist and execute calls in order**
 
@@ -1114,6 +1346,8 @@ or ends the run with `session_error`.
 No tool calls means `completed`. `max_steps` ends the turn. Provider errors,
 session errors, and `signal.is_set()` produce structured outcomes. A partial or
 `finish_reason="length"` tool call becomes an error result and is not executed.
+Invalid JSON arguments become an error tool result and allow the model to
+re-issue the call; they do not crash the runner.
 
 - [ ] **Step 6: Run tests and commit**
 
@@ -1123,13 +1357,12 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/runtime/runner.py src/coding_agent/runtime/models.py tests/test_runner.py
-git commit -m "Implement model tool agent runner"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 11: Implement AgentRuntime and Runtime Events
 
 **Files:**
-- Create: `src/coding_agent/runtime/events.py`
 - Create: `src/coding_agent/runtime/runtime.py`
 - Test: `tests/test_runtime.py`
 
@@ -1188,13 +1421,23 @@ async def test_resume_resets_permission_to_default(tmp_path):
     await runtime.new_session()
     await runtime.resume(session_id)
     assert runtime.permission_mode == "default"
+
+
+@pytest.mark.asyncio
+async def test_unknown_or_late_approval_id_is_rejected():
+    runtime = make_runtime(provider=ApprovalBlockingProvider())
+    run_id = await runtime.submit("write")
+    await wait_for_status(runtime, "waiting_approval")
+    await runtime.abort(run_id)
+    with pytest.raises(RuntimeError, match="not pending"):
+        await runtime.resolve_approval("stale", "approve")
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
 
 Run: `pytest tests/test_runtime.py -q`
 
-Expected: FAIL because the runtime and event modules do not exist.
+Expected: FAIL because the runtime implementation does not exist.
 
 - [ ] **Step 3: Implement runtime ownership and non-blocking submit**
 
@@ -1228,7 +1471,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/runtime tests/test_runtime.py
-git commit -m "Add session-scoped agent runtime"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 12: Implement TUI State and Pure Reducer
@@ -1299,7 +1542,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/tui/state.py src/coding_agent/tui/reducer.py tests/test_reducer.py
-git commit -m "Add deterministic TUI view state reducer"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 13: Build the Textual TUI Shell
@@ -1355,7 +1598,13 @@ Static#statusline
 
 Keep the statusline as the bottom fixed row. Do not add a footer row. Use
 Textual workers/tasks to await runtime operations so the UI event loop remains
-responsive.
+responsive. The runtime publishes into an asyncio queue owned by the TUI
+bridge; the bridge drains that queue on the Textual event loop and applies the
+reducer there. Runtime tasks never call widgets directly. Queue puts are
+bounded; if the UI is slow, assistant deltas may be coalesced by message id,
+while lifecycle/tool/approval events are preserved. Unsubscribe closes the
+queue consumer and removes the sink; a faulty sink is isolated from other
+subscribers.
 
 - [ ] **Step 4: Connect runtime events through the reducer**
 
@@ -1378,7 +1627,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/tui/app.py src/coding_agent/tui/widgets.py tests/test_tui.py
-git commit -m "Add Textual coding agent interface"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 14: Add Commands, Session Selector, and Statusline
@@ -1463,7 +1712,7 @@ Expected: PASS.
 
 ```bash
 git add src/coding_agent/tui tests/test_tui.py
-git commit -m "Add local commands sessions and statusline"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 15: Wire the CLI Entrypoint and End-to-End MVP Flow
@@ -1472,7 +1721,8 @@ git commit -m "Add local commands sessions and statusline"
 - Create: `src/coding_agent/app.py`
 - Create: `tests/test_integration_flow.py`
 - Create: `README.txt`
-- Modify: `README.md`
+- Create or modify: `README.md` (developer documentation; it is not one of the
+  required submission files, but the repository should document development)
 
 **Interfaces:**
 - Consumes: all completed runtime, tool, session, policy, and TUI modules.
@@ -1515,7 +1765,9 @@ credential is missing.
 `main()` parses `--workspace`, `--model`, `--base-url`, `--session-dir`, and
 `--context-window`, then starts Textual. It must not print secrets. The normal
 path is interactive TUI; tests inject a Fake Provider and never start a real
-network client.
+network client. Add `if __name__ == "__main__": main()` so
+`python -m coding_agent.app --help` works without credentials and missing-key
+errors are only emitted after argument parsing when the app is actually run.
 
 - [ ] **Step 5: Write assignment-compliant README.txt**
 
@@ -1550,7 +1802,7 @@ Expected: all tests pass, lint/format pass, and the CLI prints redacted help.
 
 ```bash
 git add src/coding_agent/app.py tests/test_integration_flow.py README.txt README.md
-git commit -m "Wire interactive coding agent MVP"
+git commit  # use the Lore-format body described in Global Constraints
 ```
 
 ## Task 16: Manual TUI Smoke Test and Video Readiness
