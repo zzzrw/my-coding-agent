@@ -23,6 +23,12 @@ def test_header_round_trips_workspace_model_title_and_window(tmp_path):
     assert reopened.header.context_window == 128_000
 
 
+def test_create_rejects_existing_session_id(tmp_path):
+    SessionStore.create(tmp_path, session_id="fixed", workspace="w", model="m", context_window=1)
+    with pytest.raises(FileExistsError):
+        SessionStore.create(tmp_path, session_id="fixed", workspace="w", model="m", context_window=1)
+
+
 def test_projection_does_not_duplicate_audit_tool_call(tmp_path):
     store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
     assistant = Message(role="assistant", tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})])
@@ -39,6 +45,22 @@ def test_projection_rejects_unmatched_tool_result(tmp_path):
     store.append_new("tool_result", {"result": ToolResult(tool_call_id="unknown", tool_name="read_file", ok=True, content="x")}, turn_id="t1")
     with pytest.raises(ValueError, match="tool_result"):
         store.project_messages()
+
+
+def test_projection_excludes_dangling_tool_assistant(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    assistant = Message(role="assistant", tool_calls=[ToolCall(id="c1", name="read_file")])
+    store.append_new("assistant_message", {"message": assistant, "complete": True}, turn_id="t1")
+    assert store.project_messages() == []
+
+
+def test_open_rejects_broken_sequence_chain(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    store.append_new("user_message", {"message": Message(role="user", content="x")})
+    text = store.path.read_text(encoding="utf-8").replace('"seq": 0', '"seq": 4')
+    store.path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="sequence"):
+        SessionStore.open(tmp_path, store.session_id)
 
 
 def test_open_turn_is_interrupted_without_replay(tmp_path):
