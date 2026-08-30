@@ -31,6 +31,7 @@ RecordType = Literal[
     "turn_end",
     "compaction",
     "context_updated",
+    "policy_changed",
     "run_start",
     "run_end",
     "error",

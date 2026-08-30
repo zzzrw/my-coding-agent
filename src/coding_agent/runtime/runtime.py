@@ -52,17 +52,19 @@ class _ApprovalBroker:
         self, request_id: str, decision: Literal["approve", "deny"]
     ) -> None:
         request = self.pending
+        future = self._future
         if (
             request is None
             or request.request_id != request_id
-            or self._future is None
-            or self._future.done()
+            or future is None
+            or future.done()
             or request.status != "pending"
         ):
             raise RuntimeError("approval not pending")
         status = "approved" if decision == "approve" else "denied"
         request = request.model_copy(update={"status": status})
         self.pending = request
+        future.set_result(decision)
         await self._publish(
             RuntimeEvent(
                 type="approval_resolved",
@@ -74,14 +76,20 @@ class _ApprovalBroker:
                 },
             )
         )
-        if not self._future.done():
-            self._future.set_result(decision)
 
     def cancel_all(self) -> None:
-        if self._future is None or self._future.done() or self.pending is None:
+        future = self._future
+        request = self.pending
+        if (
+            future is None
+            or future.done()
+            or request is None
+            or request.status != "pending"
+        ):
             return
-        request = self.pending.model_copy(update={"status": "cancelled"})
+        request = request.model_copy(update={"status": "cancelled"})
         self.pending = request
+        future.set_result("cancelled")
         asyncio.create_task(
             self._publish(
                 RuntimeEvent(
@@ -95,7 +103,6 @@ class _ApprovalBroker:
                 )
             )
         )
-        self._future.set_result("cancelled")
 
 
 class AgentRuntime:
@@ -129,9 +136,13 @@ class AgentRuntime:
         self._runner = self._make_runner()
 
     def _make_runner(self) -> AgentRunner:
-        return self._runner_factory(
+        runner = self._runner_factory(
             self.store, self._context_policy_factory(), self._broker
         )
+        # The runtime owns subscriber fan-out; runners must not bypass it.
+        runner.event_sink = self._publish
+        runner.permission_mode = self._permission_mode
+        return runner
 
     @property
     def session_id(self) -> str:
@@ -159,6 +170,20 @@ class AgentRuntime:
         return unsubscribe
 
     async def _publish(self, event: RuntimeEvent) -> None:
+        if event.type == "context_updated":
+            self._status = self._status.model_copy(
+                update={
+                    "context_used": event.payload.get(
+                        "used_tokens", self._status.context_used
+                    ),
+                    "context_window": event.payload.get(
+                        "context_window", self._status.context_window
+                    ),
+                    "context_estimated": event.payload.get(
+                        "estimated", self._status.context_estimated
+                    ),
+                }
+            )
         for sink in list(self._subscribers):
             try:
                 await sink(event)
@@ -203,6 +228,7 @@ class AgentRuntime:
     async def _run(
         self, prompt: str, run_id: str, turn_id: str, signal: asyncio.Event
     ) -> None:
+        turn_closed = False
         try:
             outcome = await self._runner.run_turn(
                 prompt, run_id=run_id, turn_id=turn_id, signal=signal
@@ -215,6 +241,9 @@ class AgentRuntime:
                 usage=outcome.usage,
                 run_id=run_id,
                 turn_id=turn_id,
+                context_used=self._status.context_used,
+                context_window=self._status.context_window,
+                context_estimated=self._status.context_estimated,
             )
             self.store.append_new(
                 "turn_end",
@@ -222,13 +251,30 @@ class AgentRuntime:
                 run_id=run_id,
                 turn_id=turn_id,
             )
+            turn_closed = True
             await self._emit(
                 "run_finished", outcome=outcome.model_dump(), steps=outcome.steps
             )
         except asyncio.CancelledError:
+            if not turn_closed:
+                with contextlib.suppress(Exception):
+                    self.store.append_new(
+                        "turn_end",
+                        {"reason": "aborted"},
+                        run_id=run_id,
+                        turn_id=turn_id,
+                    )
             raise
         except Exception as exc:  # noqa: BLE001 - runtime errors become events
             self._status = RuntimeStatus(status="error", run_id=run_id, turn_id=turn_id)
+            with contextlib.suppress(Exception):
+                self.store.append_new(
+                    "turn_end",
+                    {"reason": "runtime_error", "error": str(exc)},
+                    run_id=run_id,
+                    turn_id=turn_id,
+                )
+            turn_closed = True
             await self._emit(
                 "run_error", code="runtime_error", message=str(exc), recoverable=False
             )
@@ -256,9 +302,10 @@ class AgentRuntime:
             await asyncio.wait_for(asyncio.shield(task), 5.0)
         except TimeoutError:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._status = self._status.model_copy(update={"status": "idle"})
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), 1.0)
+            self._status = self._status.model_copy(update={"status": "aborted"})
+        self._status = self._status.model_copy(update={"status": "aborted"})
 
     async def resolve_approval(
         self, request_id: str, decision: Literal["approve", "deny"]
@@ -267,6 +314,8 @@ class AgentRuntime:
 
     async def set_permission(self, mode: PermissionMode) -> None:
         self._permission_mode = mode
+        self._runner.permission_mode = mode
+        self.store.append_new("policy_changed", {"policy": mode})
         await self._emit("policy_changed", policy=mode)
 
     async def new_session(self) -> str:
@@ -279,6 +328,8 @@ class AgentRuntime:
             context_window=self.store.header.context_window,
         )
         self._permission_mode = "default"
+        self._last_outcome = None
+        self._status = RuntimeStatus()
         self._runner = self._make_runner()
         await self._publish(
             RuntimeEvent(type="session_loaded", payload={"session_id": self.session_id})
@@ -294,6 +345,8 @@ class AgentRuntime:
         self.store = SessionStore.open(self.store.path.parent, session_id)
         self._model = self.store.header.model
         self._permission_mode = "default"
+        self._last_outcome = None
+        self._status = RuntimeStatus()
         self._runner = self._make_runner()
         await self._publish(
             RuntimeEvent(type="session_loaded", payload={"session_id": session_id})
@@ -340,15 +393,16 @@ class AgentRuntime:
         turns = list(dict.fromkeys(item.turn_id for item in history if item.turn_id))
         removed = turns[: view.removed_turns]
         retained = turns[view.removed_turns :]
+        tokens_before = sum(
+            max(1, len(item.message.content or "") // 4) for item in [*history]
+        ) + max(1, len(self._system_prompt.content or "") // 4)
         self.store.append_new(
             "compaction",
             {
                 "strategy": "turn_truncate",
                 "removed_turn_ids": removed,
                 "retained_turn_ids": retained,
-                "tokens_before": policy.estimate_tokens(
-                    [self._system_prompt] + [i.message for i in history]
-                ),
+                "tokens_before": tokens_before,
                 "tokens_after": view.used_tokens,
                 "forced": True,
             },

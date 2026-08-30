@@ -4,6 +4,7 @@ import pytest
 
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.policy.approval import DefaultApprovalPolicy
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import Message, TurnOutcome
 from coding_agent.runtime.runtime import AgentRuntime, _ApprovalBroker
 from coding_agent.session.models import ApprovalRequest
@@ -16,6 +17,23 @@ class BlockingRunner:
 
     async def run_turn(self, prompt, *, run_id, turn_id, signal):
         await self.gate.wait()
+        return TurnOutcome(reason="completed", final_text=prompt, steps=1)
+
+
+class EventRunner:
+    def __init__(self):
+        self.event_sink = None
+        self.permission_mode = "default"
+
+    async def run_turn(self, prompt, *, run_id, turn_id, signal):
+        await self.event_sink(
+            RuntimeEvent(
+                type="context_updated",
+                run_id=run_id,
+                turn_id=turn_id,
+                payload={"used_tokens": 7, "context_window": 100, "estimated": True},
+            )
+        )
         return TurnOutcome(reason="completed", final_text=prompt, steps=1)
 
 
@@ -138,3 +156,29 @@ async def test_compact_records_metadata(tmp_path):
         "tokens_after",
     } <= record.payload.keys()
     assert any(event.type == "context_updated" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runner_events_are_bridged_and_status_updates(tmp_path):
+    runner = EventRunner()
+    runtime, _ = make_runtime(tmp_path, runner)
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    await runtime.submit("hello")
+    await asyncio.sleep(0.05)
+    assert any(event.type == "context_updated" for event in events)
+    assert runtime.status.context_used == 7
+    assert runtime.status.context_window == 100
+    assert runtime.status.context_estimated is True
+
+
+@pytest.mark.asyncio
+async def test_permission_updates_runner_and_persists_record(tmp_path):
+    runtime, runner = make_runtime(tmp_path)
+    await runtime.set_permission("full")
+    assert runner.permission_mode == "full"
+    assert runtime.store.records()[-1].type == "policy_changed"

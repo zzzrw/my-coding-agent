@@ -67,6 +67,8 @@ class SessionStore:
 
     @classmethod
     def open(cls, root: Path, session_id: str) -> SessionStore:
+        if Path(session_id).name != session_id or session_id in {"", ".", ".."}:
+            raise ValueError("invalid session id")
         path = root / f"{session_id}.jsonl"
         lines = path.read_text(encoding="utf-8").splitlines()
         if not lines:
@@ -114,6 +116,16 @@ class SessionStore:
 
     def append(self, record: SessionRecord) -> None:
         with self._lock:
+            if self._notice is not None:
+                lines = [self._header.model_dump(mode="json")] + [
+                    item.model_dump(mode="json") for item in self._records
+                ]
+                self._path.write_text(
+                    "\n".join(json.dumps(item, ensure_ascii=True) for item in lines)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                self._notice = None
             expected = len(self._records)
             if record.seq != expected:
                 raise ValueError(f"record seq must be {expected}")

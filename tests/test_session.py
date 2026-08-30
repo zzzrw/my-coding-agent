@@ -143,3 +143,18 @@ def test_malformed_final_line_is_usable_and_reports_notice(tmp_path):
     reopened = SessionStore.open(tmp_path, store.session_id)
     assert len(reopened.records()) == 1
     assert "corrupt" in (reopened.load_notice or "")
+
+
+def test_append_repairs_corrupt_final_line_for_future_reopen(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    store.path.write_text(
+        store.path.read_text(encoding="utf-8") + "{bad\n", encoding="utf-8"
+    )
+    reopened = SessionStore.open(tmp_path, store.session_id)
+    reopened.append_new("user_message", {"message": Message(role="user", content="ok")})
+    assert SessionStore.open(tmp_path, store.session_id).records()[-1].seq == 0
+
+
+def test_open_rejects_path_traversal_session_id(tmp_path):
+    with pytest.raises(ValueError, match="invalid session id"):
+        SessionStore.open(tmp_path, "../outside")
