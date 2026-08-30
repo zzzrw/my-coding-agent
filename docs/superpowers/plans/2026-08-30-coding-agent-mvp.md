@@ -91,6 +91,7 @@ tests/
 ├── test_registry.py
 ├── test_tools_filesystem.py
 ├── test_tools_search.py
+├── test_tools_shell.py
 ├── test_policy.py
 ├── test_executor.py
 ├── test_context.py
@@ -98,6 +99,7 @@ tests/
 ├── test_runtime.py
 ├── test_reducer.py
 ├── test_tui.py
+├── test_events.py
 └── test_integration_flow.py
 README.txt
 ```
@@ -260,7 +262,7 @@ git commit  # use the Lore-format body described in Global Constraints
 - Test: `tests/test_events.py`
 
 **Interfaces:**
-- Produces `Message`, `ToolCall`, `Usage`, `LLMEvent`, `ToolSchema`, `ToolResult`, `SessionHeader`, `SessionRecord`, `SessionMessage`, `ContextView`, `SessionSummary`, `ApprovalRequest`, `RuntimeEvent`, and `EventSink` before any runner or UI task begins.
+- Produces `Message`, `ToolCall`, `Usage`, `LLMEvent`, `ToolSchema`, `ToolResult`, `SessionHeader`, `SessionRecord`, `SessionMessage`, `ContextView`, `SessionSummary`, `ApprovalRequest`, `RuntimeStatus`, `RuntimeEvent`, and `EventSink` before any runner or UI task begins.
 - Later tasks import these models instead of creating ad hoc dictionaries.
 
 - [ ] **Step 1: Write model validation tests**
@@ -309,6 +311,13 @@ def test_tool_result_has_structured_error_fields():
         error="missing",
     )
     assert result.ok is False
+
+
+def test_provider_event_and_runtime_status_have_boundary_fields():
+    event = LLMEvent(type="text_delta", text="hi")
+    status = RuntimeStatus(status="idle")
+    assert event.text == "hi"
+    assert status.status == "idle"
 ```
 
 - [ ] **Step 2: Run the tests and verify they fail**
@@ -342,6 +351,37 @@ class ToolResult(BaseModel):
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
+
+Define the normalized provider event model used by Task 3:
+
+```python
+class LLMEvent(BaseModel):
+    type: Literal["text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "response_end", "error"]
+    text: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    arguments_delta: str | None = None
+    finish_reason: str | None = None
+    usage: Usage | None = None
+    error: str | None = None
+```
+
+Also define the runtime status projection consumed by the TUI:
+
+```python
+class RuntimeStatus(BaseModel):
+    status: Literal["idle", "running", "waiting_approval", "error", "aborted"] = "idle"
+    run_id: str | None = None
+    turn_id: str | None = None
+    usage: Usage | None = None
+    context_used: int = 0
+    context_window: int | None = None
+    context_estimated: bool = False
+```
+
+Use `ConfigDict(extra="forbid")` validation tests for both models, and keep
+all optional event fields nullable so a parser can emit the smallest valid
+event for each stream chunk.
 
 `ToolSchema` has `name`, `description`, `parameters`, `risk_level`, and
 `is_parallel_safe`. `SessionRecord` has `id`, `seq`, `timestamp`, the approved
@@ -560,6 +600,10 @@ class SessionStore:
     @classmethod
     def open(cls, root: Path, session_id: str) -> "SessionStore": ...
     @property
+    def path(self) -> Path: ...
+    @property
+    def load_notice(self) -> str | None: ...
+    @property
     def header(self) -> SessionHeader: ...
     def append(self, record: SessionRecord) -> None: ...
     def append_new(
@@ -652,6 +696,15 @@ def test_open_turn_is_marked_interrupted_without_replay(tmp_path):
     reopened = SessionStore.open(tmp_path, store.session_id)
     assert reopened.has_interrupted_turn()
     assert reopened.project_messages() == []
+
+
+def test_malformed_final_line_is_usable_and_reports_notice(tmp_path):
+    store = SessionStore.create(tmp_path, workspace=str(tmp_path), model="fake", context_window=1000)
+    store.append_new("user_message", {"message": Message(role="user", content="hi")})
+    store.path.write_text(store.path.read_text(encoding="utf-8") + "{bad json\n", encoding="utf-8")
+    reopened = SessionStore.open(tmp_path, store.session_id)
+    assert len(reopened.records()) == 1
+    assert "corrupt" in (reopened.load_notice or "")
 ```
 
 - [ ] **Step 2: Run tests and verify they fail**
@@ -672,6 +725,12 @@ prompt when the header still has the default title. A malformed final JSONL
 line is ignored and reported as an interrupted/corrupt notice; earlier valid
 records remain usable. Invalid headers fail closed and are excluded from the
 selector.
+
+Expose a read-only `load_notice: str | None` on an opened store. A malformed
+final JSONL line is ignored only after all earlier lines validate; `open()` sets
+`load_notice` to a corruption/interruption notice, while malformed headers or
+non-final malformed records fail closed. `AgentRuntime.resume()` republishes
+that notice as a `notice` event so the TUI can show it.
 
 - [ ] **Step 4: Implement projection invariants**
 
@@ -892,7 +951,10 @@ outside path fails until `allow_outside_once=True`; `full` accepts it.
 
 `run_command` executes `/bin/sh -c` with `cwd=context.workspace`, captures
 stdout/stderr, returns exit code and elapsed time, applies the per-call timeout,
-and starts a process group so cancellation can terminate descendants.
+and starts a process group. It concurrently watches `signal.is_set()`; on
+cancellation it sends SIGTERM to the process group, waits a short grace period,
+then sends SIGKILL if needed, awaits process cleanup, and returns a cancelled
+`ToolResult` without leaving descendants behind.
 
 - [ ] **Step 4: Implement bounded list and grep**
 
@@ -910,6 +972,10 @@ Expected: PASS.
 git add src/coding_agent/tools/filesystem.py src/coding_agent/tools/search.py src/coding_agent/tools/shell.py tests/test_tools_filesystem.py tests/test_tools_search.py tests/test_tools_shell.py
 git commit  # use the Lore-format body described in Global Constraints
 ```
+
+The shell test module must also cover timeout and cancellation: start a command
+that spawns a child, set the cancellation event, await the result, and assert a
+cancelled bounded error plus completed process-group cleanup.
 
 ## Task 7: Implement Command Classification and Permission Modes
 
@@ -1192,6 +1258,10 @@ class ContextPolicy(Protocol):
         usage: Usage | None,
         force: bool = False,
     ) -> ContextView: ...
+
+class TruncatePolicy(ContextPolicy):
+    @staticmethod
+    def estimate_tokens(messages: list[Message]) -> int: ...
 ```
 
 - [ ] **Step 1: Write context tests**
@@ -1224,6 +1294,12 @@ def test_compaction_records_removed_turn_count_and_marker():
 def test_current_turn_overflow_is_reported():
     view = TruncatePolicy(budget=10).prepare(large_current_turn, system_prompt=SYSTEM, context_window=10, usage=None)
     assert view.overflow is True
+
+
+def test_usage_fallback_is_deterministic_and_marked_estimated():
+    view = TruncatePolicy(budget=1000).prepare(history, system_prompt=SYSTEM, context_window=1000, usage=None)
+    assert view.estimated is True
+    assert view.used_tokens == TruncatePolicy.estimate_tokens(view.messages)
 ```
 
 - [ ] **Step 2: Run tests and verify failure**
@@ -1326,6 +1402,11 @@ async def test_invalid_json_tool_call_is_returned_to_model_as_error():
     assert any(message.role == "tool" and "invalid" in (message.content or "") for message in runner.store.project_messages())
 ```
 
+Add two failure-path tests before implementation: a provider `error` event
+produces `provider_error` without another retry, and setting the cancellation
+event during a blocked provider produces `aborted` after the stream/task is
+cleaned up. These complement the incomplete-call and `max_steps` cases above.
+
 - [ ] **Step 2: Run tests and verify failure**
 
 Run: `pytest tests/test_runner.py -q`
@@ -1380,6 +1461,17 @@ git commit  # use the Lore-format body described in Global Constraints
 
 ```python
 class AgentRuntime:
+    def __init__(
+        self,
+        *,
+        store: SessionStore,
+        runner_factory: Callable[[SessionStore, ContextPolicy, ApprovalBroker], AgentRunner],
+        context_policy_factory: Callable[[], ContextPolicy],
+        approval_policy: ApprovalPolicy,
+        system_prompt: Message,
+        model: str,
+        permission_mode: PermissionMode = "default",
+    ) -> None: ...
     async def submit(self, prompt: str) -> str: ...
     async def new_session(self) -> str: ...
     async def list_sessions(self) -> list[SessionSummary]: ...
@@ -1445,6 +1537,14 @@ async def test_unknown_or_late_approval_id_is_rejected():
         await runtime.resolve_approval("stale", "approve")
 ```
 
+Add `test_compact_records_metadata_and_preserves_records`: seed at least two
+complete turns, call `await runtime.compact()` while idle, assert one
+`compaction` record whose payload contains `strategy`, `removed_turn_ids`,
+`retained_turn_ids`, `tokens_before`, `tokens_after`, and `forced=True`, and
+assert a `context_updated` event. A compact request with no removable complete
+turn is idle-safe, emits a notice, and does not append an empty compaction
+record. Add `test_compact_rejects_active_run` to prove it cannot race a run.
+
 - [ ] **Step 2: Run tests and verify failure**
 
 Run: `pytest tests/test_runtime.py -q`
@@ -1460,6 +1560,13 @@ an active task, creates `run_id`/`turn_id`, appends `turn_start` and
 `turn_end`, publishes `run_finished` or `run_error`, refreshes git branch and
 usage, and clears the active task.
 
+The constructor signature above is the dependency-injection boundary. The
+runtime creates the single `ApprovalBroker`; `runner_factory` receives that
+broker plus the current store and context policy so `new_session` and `resume`
+can rebuild the runner without leaking Textual or provider wire types into the
+runtime. `context_policy_factory` creates a fresh policy for each new/resumed
+session.
+
 - [ ] **Step 4: Implement event subscriptions and approval resolution**
 
 Publish events to a snapshot of subscribers so one faulty sink cannot prevent
@@ -1473,7 +1580,14 @@ provider/tool cleanup before publishing the final outcome.
 `new_session()` works only while idle, resets the context policy and visible
 session state, and uses default permission. `list_sessions()` delegates to the
 store. `resume()` loads the selected session, marks an open turn interrupted,
-sets permission to default, and publishes `session_loaded`.
+sets permission to default, rebuilds the runner, publishes `session_loaded`, and
+republishes `store.load_notice` when present.
+
+`compact()` works only while idle. It calls `ContextPolicy.prepare(force=True)`
+on the projected history, publishes `context_updated`, and when a complete turn
+was removed appends one `compaction` record with the exact metadata fields
+`strategy`, `removed_turn_ids`, `retained_turn_ids`, `tokens_before`,
+`tokens_after`, and `forced`. It never rewrites or deletes prior records.
 
 - [ ] **Step 6: Run tests and commit**
 
@@ -1605,6 +1719,10 @@ async def test_enter_submits_prompt_when_idle():
         await pilot.pause()
         assert app.runtime.submit_calls == ["inspect the project"]
 ```
+
+Also cover the required safety controls with Pilot tests: Ctrl-C during a run
+calls `runtime.abort()` and returns to idle, and an approval modal renders the
+request then calls only `runtime.resolve_approval()` for Approve/Deny.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -1814,7 +1932,10 @@ explicit note that core agent logic is self-implemented
 
 Do not include a real key, personal name, undergraduate school, or other
 identifying information. Update `README.md` with developer-oriented details,
-not credentials.
+not credentials. Populate the repository URL from `git remote get-url origin`
+and render the actual public URL (for example, convert the `git@host:path`
+form to `https://host/path`); if no origin exists, stop rather than writing a
+placeholder.
 
 - [ ] **Step 6: Run the full MVP verification**
 
@@ -1830,7 +1951,8 @@ python -m coding_agent.app --help
 Expected: all tests pass, lint/format pass, and the CLI prints redacted help.
 Also run `markdownlint docs/superpowers/plans/2026-08-30-coding-agent-mvp.md docs/superpowers/specs/2026-08-30-coding-agent-mvp-design.md`.
 Verify assignment artifacts: `README.txt` is under 1,000 Chinese characters,
-contains the repository URL and run instructions without credentials or
+contains the non-placeholder URL returned by `git remote get-url origin` and
+run instructions without credentials or
 identity, and the demo MP4 exists, is at most two minutes, and is no larger
 than 200 MB.
 
@@ -1959,3 +2081,10 @@ These are deliberately separate from the MVP execution sequence:
 The plan contains no placeholder markers or unspecified “add appropriate
 handling” steps. Every task names files, interfaces, failing tests, commands,
 implementation behavior, and a commit boundary.
+
+### Fresh review status
+
+PASS after the independent review: compact/runtime construction and corruption
+notice contracts are explicit; shell cancellation and required failure-path
+tests are named; the top-level test map is complete; and README URL validation
+is executable. Re-run `markdownlint` and `git diff --check` after any plan edit.
