@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from coding_agent.runtime.models import Message
 from coding_agent.tools.models import ToolResult
@@ -14,7 +16,13 @@ from .models import SessionHeader, SessionMessage, SessionRecord, SessionSummary
 
 
 class SessionStore:
-    def __init__(self, path: Path, header: SessionHeader, records: list[SessionRecord], notice: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        header: SessionHeader,
+        records: list[SessionRecord],
+        notice: str | None = None,
+    ) -> None:
         self._path = path
         self._header = header
         self._records = records
@@ -22,23 +30,43 @@ class SessionStore:
         self._lock = threading.Lock()
 
     @classmethod
-    def create(cls, root: Path, *, session_id: str | None = None, workspace: str, model: str, context_window: int, title: str = "New session") -> "SessionStore":
+    def create(
+        cls,
+        root: Path,
+        *,
+        session_id: str | None = None,
+        workspace: str,
+        model: str,
+        context_window: int,
+        title: str = "New session",
+    ) -> SessionStore:
         root.mkdir(parents=True, exist_ok=True)
         sid = session_id or uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
-        header = SessionHeader(session_id=sid, workspace=workspace, model=model, title=title, created_at=now, updated_at=now, context_window=context_window)
+        now = datetime.now(UTC)
+        header = SessionHeader(
+            session_id=sid,
+            workspace=workspace,
+            model=model,
+            title=title,
+            created_at=now,
+            updated_at=now,
+            context_window=context_window,
+        )
         path = root / f"{sid}.jsonl"
         if path.exists():
             raise FileExistsError(f"session already exists: {sid}")
         with path.open("w", encoding="utf-8") as stream:
-            stream.write(json.dumps(header.model_dump(mode="json"), ensure_ascii=True) + "\n")
+            stream.write(
+                json.dumps(header.model_dump(mode="json"), ensure_ascii=True) + "\n"
+            )
             stream.flush()
             import os
+
             os.fsync(stream.fileno())
         return cls(path, header, [])
 
     @classmethod
-    def open(cls, root: Path, session_id: str) -> "SessionStore":
+    def open(cls, root: Path, session_id: str) -> SessionStore:
         path = root / f"{session_id}.jsonl"
         lines = path.read_text(encoding="utf-8").splitlines()
         if not lines:
@@ -88,15 +116,36 @@ class SessionStore:
             if record.parent_id != parent:
                 raise ValueError("record parent_id does not match active leaf")
             self._records.append(record)
-            self._header = self._header.model_copy(update={"updated_at": record.timestamp})
+            self._header = self._header.model_copy(
+                update={"updated_at": record.timestamp}
+            )
             import os
+
             with self._path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record.model_dump(mode="json"), ensure_ascii=True) + "\n")
+                stream.write(
+                    json.dumps(record.model_dump(mode="json"), ensure_ascii=True) + "\n"
+                )
                 stream.flush()
                 os.fsync(stream.fileno())
 
-    def append_new(self, record_type: str, payload: dict[str, Any], *, run_id: str | None = None, turn_id: str | None = None) -> SessionRecord:
-        record = SessionRecord(id=uuid.uuid4().hex, seq=len(self._records), timestamp=datetime.now(timezone.utc), type=record_type, payload=payload, parent_id=self._records[-1].id if self._records else None, run_id=run_id, turn_id=turn_id)
+    def append_new(
+        self,
+        record_type: str,
+        payload: dict[str, Any],
+        *,
+        run_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> SessionRecord:
+        record = SessionRecord(
+            id=uuid.uuid4().hex,
+            seq=len(self._records),
+            timestamp=datetime.now(UTC),
+            type=record_type,
+            payload=payload,
+            parent_id=self._records[-1].id if self._records else None,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
         self.append(record)
         return record
 
@@ -129,31 +178,79 @@ class SessionStore:
             tid = record.turn_id or record.payload.get("turn_id")
             if tid in open_turns:
                 continue
-            if record.type == "assistant_message" and record.payload.get("complete") is True:
+            if (
+                record.type == "assistant_message"
+                and record.payload.get("complete") is True
+            ):
                 msg = Message.model_validate(record.payload["message"])
                 idx = len(projected)
-                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=msg))
+                projected.append(
+                    SessionMessage(
+                        record_id=record.id,
+                        turn_id=record.turn_id,
+                        seq=record.seq,
+                        message=msg,
+                    )
+                )
                 active_assistant = (idx, tid)
                 for call in msg.tool_calls:
                     pending_calls[call.id] = (idx, tid)
             elif record.type == "user_message":
                 msg = Message.model_validate(record.payload["message"])
-                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=msg))
+                projected.append(
+                    SessionMessage(
+                        record_id=record.id,
+                        turn_id=record.turn_id,
+                        seq=record.seq,
+                        message=msg,
+                    )
+                )
                 active_assistant = None
             elif record.type == "tool_result":
                 result = ToolResult.model_validate(record.payload["result"])
-                if result.tool_call_id not in pending_calls or result.tool_call_id in completed_calls:
-                    raise ValueError(f"tool_result does not match preceding tool call: {result.tool_call_id}")
+                if (
+                    result.tool_call_id not in pending_calls
+                    or result.tool_call_id in completed_calls
+                ):
+                    raise ValueError(
+                        f"tool_result does not match preceding tool call: {result.tool_call_id}"
+                    )
                 assistant_idx, assistant_turn = pending_calls[result.tool_call_id]
-                if assistant_turn != tid or active_assistant != (assistant_idx, assistant_turn):
-                    raise ValueError(f"tool_result is not in assistant turn: {result.tool_call_id}")
+                if assistant_turn != tid or active_assistant != (
+                    assistant_idx,
+                    assistant_turn,
+                ):
+                    raise ValueError(
+                        f"tool_result is not in assistant turn: {result.tool_call_id}"
+                    )
                 completed_calls.add(result.tool_call_id)
-                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=Message(role="tool", content=result.content, tool_call_id=result.tool_call_id, name=result.tool_name)))
+                projected.append(
+                    SessionMessage(
+                        record_id=record.id,
+                        turn_id=record.turn_id,
+                        seq=record.seq,
+                        message=Message(
+                            role="tool",
+                            content=result.content,
+                            tool_call_id=result.tool_call_id,
+                            name=result.tool_name,
+                        ),
+                    )
+                )
             elif record.type not in {"tool_call", "turn_start", "turn_end"}:
                 active_assistant = None
-        dangling = {call_id for call_id in pending_calls if call_id not in completed_calls}
+        dangling = {
+            call_id for call_id in pending_calls if call_id not in completed_calls
+        }
         if dangling:
-            projected = [item for item in projected if not (item.message.role == "assistant" and any(call.id in dangling for call in item.message.tool_calls))]
+            projected = [
+                item
+                for item in projected
+                if not (
+                    item.message.role == "assistant"
+                    and any(call.id in dangling for call in item.message.tool_calls)
+                )
+            ]
         return projected
 
     @classmethod
@@ -169,10 +266,24 @@ class SessionStore:
                 for record in store.records():
                     if record.type == "user_message":
                         try:
-                            title = Message.model_validate(record.payload["message"]).content or title
-                        except Exception:
-                            pass
+                            title = (
+                                Message.model_validate(
+                                    record.payload["message"]
+                                ).content
+                                or title
+                            )
+                        except (KeyError, ValidationError):
+                            title = store.header.title
                         break
             status = "interrupted" if store.has_interrupted_turn() else "idle"
-            summaries.append(SessionSummary(id=store.session_id, workspace=store.header.workspace, created_at=store.header.created_at, updated_at=store.header.updated_at, title=title[:80], last_status=status))
+            summaries.append(
+                SessionSummary(
+                    id=store.session_id,
+                    workspace=store.header.workspace,
+                    created_at=store.header.created_at,
+                    updated_at=store.header.updated_at,
+                    title=title[:80],
+                    last_status=status,
+                )
+            )
         return sorted(summaries, key=lambda s: s.updated_at, reverse=True)

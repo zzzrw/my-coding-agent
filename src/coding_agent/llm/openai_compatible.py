@@ -71,7 +71,9 @@ class ChatChunkParser:
                         total_tokens=usage.get("total_tokens", 0),
                     )
                 events.append(
-                    LLMEvent(type="response_end", finish_reason=reason, usage=parsed_usage)
+                    LLMEvent(
+                        type="response_end", finish_reason=reason, usage=parsed_usage
+                    )
                 )
             return events
         usage = chunk.get("usage") if isinstance(chunk, dict) else None
