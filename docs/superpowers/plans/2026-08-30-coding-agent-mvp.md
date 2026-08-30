@@ -25,7 +25,14 @@
 - `default` and `workspace` require one-time approval for outside paths; `full` bypasses ordinary approval and path containment but never bypasses catastrophic-command denial.
 - Resume restores conversation facts, workspace, and model; it starts with `default` permission and never replays old processes or tool side effects.
 - Stream deltas are live events only; complete assistant messages and tool results are persisted, and incomplete tool calls are never executed.
-- Automated tests use Fake Provider and temporary workspaces. Real API calls are manual acceptance only.
+- Default automated tests use Fake Provider and temporary workspaces. Real API
+  calls are optional explicit live smoke checks or manual acceptance only.
+- An opt-in DeepSeek live smoke test may be added, but it is never part of the
+  default test suite or CI: require `RUN_LIVE_LLM_TESTS=1` plus
+  `DEEPSEEK_API_KEY` in the process environment, use a minimal prompt with no
+  workspace/tools, redact credentials from all output, and skip when the gate
+  or key is absent. Never persist the key in source, `.env`, README, fixtures,
+  session files, screenshots, or video.
 - Keep assignment credentials out of Git, README files, and video; preserve double-blind anonymity in all deliverables.
 
 Every implementation commit must use the repository Lore format. The short
@@ -87,6 +94,7 @@ tests/
 ├── fakes.py
 ├── test_models.py
 ├── test_provider.py
+├── test_live_provider.py
 ├── test_session.py
 ├── test_registry.py
 ├── test_tools_filesystem.py
@@ -228,6 +236,7 @@ packages = ["src/coding_agent"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live: opt-in network smoke test; requires explicit environment gate"]
 ```
 
 Create `src/coding_agent/__init__.py` with `__version__ = "0.1.0"` and empty
@@ -449,6 +458,7 @@ git commit  # use the Lore-format body described in Global Constraints
 - Create: `src/coding_agent/llm/openai_compatible.py`
 - Create: `tests/fakes.py`
 - Test: `tests/test_provider.py`
+- Test: `tests/test_live_provider.py` (opt-in only)
 
 **Interfaces:**
 - Consumes: `Message`, `ToolSchema`, `LLMEvent`, and `Usage` from Task 2.
@@ -566,10 +576,30 @@ Run: `pytest tests/test_provider.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the provider boundary**
+- [ ] **Step 5: Add the opt-in live provider smoke test**
+
+Create a `@pytest.mark.live` test that exits with `pytest.skip` unless both
+`RUN_LIVE_LLM_TESTS=1` and `DEEPSEEK_API_KEY` are present. Construct the same
+`OpenAICompatibleProvider` using an environment-configured base URL/model (with
+DeepSeek defaults documented in the test), send only a fixed minimal prompt,
+assert at least one normalized event and a terminating `response_end`, and
+never include the key or full response in assertion messages. Keep this test
+separate from all Fake Provider tests and do not execute it in CI by default.
+
+Run the live check only when explicitly requested:
 
 ```bash
-git add src/coding_agent/llm tests/fakes.py tests/test_provider.py
+RUN_LIVE_LLM_TESTS=1 DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  pytest -m live tests/test_live_provider.py -q
+```
+
+The command must be process-scoped; do not add the key to shell startup files
+or any repository-local file.
+
+- [ ] **Step 6: Commit the provider boundary**
+
+```bash
+git add src/coding_agent/llm tests/fakes.py tests/test_provider.py tests/test_live_provider.py
 git commit  # use the Lore-format body described in Global Constraints
 ```
 
@@ -1950,6 +1980,9 @@ python -m coding_agent.app --help
 
 Expected: all tests pass, lint/format pass, and the CLI prints redacted help.
 Also run `markdownlint docs/superpowers/plans/2026-08-30-coding-agent-mvp.md docs/superpowers/specs/2026-08-30-coding-agent-mvp-design.md`.
+The live provider test remains opt-in and is run separately only when network
+credentials are intentionally available; its failure must not make the
+network-free suite fail.
 Verify assignment artifacts: `README.txt` is under 1,000 Chinese characters,
 contains the non-placeholder URL returned by `git remote get-url origin` and
 run instructions without credentials or
