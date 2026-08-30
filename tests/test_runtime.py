@@ -5,7 +5,8 @@ import pytest
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.runtime.models import Message, TurnOutcome
-from coding_agent.runtime.runtime import AgentRuntime
+from coding_agent.runtime.runtime import AgentRuntime, _ApprovalBroker
+from coding_agent.session.models import ApprovalRequest
 from coding_agent.session.store import SessionStore
 
 
@@ -77,3 +78,63 @@ async def test_new_and_resume_reset_permission(tmp_path):
     await runtime.set_permission("full")
     await runtime.resume(old_id)
     assert runtime.permission_mode == "default" and runtime.session_id == old_id
+
+
+@pytest.mark.asyncio
+async def test_approval_cannot_be_resolved_twice():
+    events = []
+
+    async def publish(event):
+        events.append(event)
+
+    statuses = []
+    broker = _ApprovalBroker(publish, statuses.append)
+    request = ApprovalRequest(
+        request_id="a1",
+        run_id="r1",
+        tool_call_id="c1",
+        tool_name="write_file",
+        risk_level="mutate_file",
+    )
+    pending = asyncio.create_task(broker.request(request))
+    await asyncio.sleep(0)
+    await broker.resolve("a1", "approve")
+    with pytest.raises(RuntimeError, match="not pending"):
+        await broker.resolve("a1", "deny")
+    assert await pending == "approve"
+    assert statuses == ["waiting_approval", "running"]
+    assert [event.type for event in events].count("approval_resolved") == 1
+
+
+@pytest.mark.asyncio
+async def test_compact_records_metadata(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    runtime.store.append_new(
+        "user_message", {"message": Message(role="user", content="old")}, turn_id="old"
+    )
+    runtime.store.append_new(
+        "assistant_message",
+        {"message": Message(role="assistant", content="answer"), "complete": True},
+        turn_id="old",
+    )
+    runtime.store.append_new(
+        "user_message", {"message": Message(role="user", content="new")}, turn_id="new"
+    )
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    await runtime.compact()
+    record = runtime.store.records()[-1]
+    assert record.type == "compaction"
+    assert record.payload["forced"] is True
+    assert {
+        "strategy",
+        "removed_turn_ids",
+        "retained_turn_ids",
+        "tokens_before",
+        "tokens_after",
+    } <= record.payload.keys()
+    assert any(event.type == "context_updated" for event in events)
