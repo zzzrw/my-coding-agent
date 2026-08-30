@@ -11,14 +11,42 @@ class CommandClassification(BaseModel):
 
 
 _CATASTROPHIC = [
-    r"\bmkfs(?:\.|\s)",
+    r"\b(?:\S*/)?mkfs(?:\.[\w-]+)?(?:\s|$)",
+    r"\b(?:\S*/)?fdisk(?:\s|$)",
     r"\bdd\s+.*of=/dev/",
+    r">{1,2}\s*/dev/",
     r"\b(shutdown|reboot|poweroff)\b",
     r"git\s+push\s+--force",
     r"git\s+reset\s+--hard",
-    r"git\s+clean\s+-[a-z]*f",
-    r":\s*\(\s*\)\s*\{.*\|.*&\s*\}\s*;\s*:",
+    r"\bgit\s+clean\b(?=[^\n]*(?:\s--force(?:\s|=|$)|\s-[a-zA-Z]*f))",
+    r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*;?\s*\}\s*;\s*:",
 ]
+
+_SHELL_SYNTAX = re.compile(
+    r"\||&&|\|\||;|`|\$\(|\$\{|<\(|>\(|\b(?:sh|bash|zsh|fish)\s+-[a-z]*c\b",
+    re.IGNORECASE,
+)
+
+
+def _rm_is_catastrophic(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token != "rm":
+            continue
+        operands = [
+            item
+            for item in tokens[index + 1 :]
+            if item == "--" or not item.startswith("-")
+        ]
+        if operands and operands[0] == "--":
+            operands = operands[1:]
+        if any(
+            item == "/"
+            or item == "~"
+            or item.startswith(("/*", "/home", "/root", "~/"))
+            for item in operands
+        ):
+            return True
+    return False
 
 
 def classify_command(command: str) -> CommandClassification:
@@ -26,14 +54,8 @@ def classify_command(command: str) -> CommandClassification:
         tokens = shlex.split(command)
     except ValueError:
         tokens = []
-    for index, token in enumerate(tokens):
-        if token != "rm":
-            continue
-        operands = [item for item in tokens[index + 1 :] if item == "--" or not item.startswith("-")]
-        if operands and operands[0] == "--":
-            operands = operands[1:]
-        if any(item in {"/", "~", "/*"} for item in operands):
-            return CommandClassification(catastrophic=True, reason="catastrophic command")
+    if _rm_is_catastrophic(tokens):
+        return CommandClassification(catastrophic=True, reason="catastrophic command")
     for pattern in _CATASTROPHIC:
         if re.search(pattern, command, re.IGNORECASE):
             return CommandClassification(
@@ -44,6 +66,8 @@ def classify_command(command: str) -> CommandClassification:
             r"(^|\s)(?:/|\.\./)|\b(?:cd|git\s+-C)\b|[<>]\s*[/~]|\$\(|`|\b(?:python|python3|node|ruby|perl)\s+-c\b",
             command,
         )
+        or _SHELL_SYNTAX.search(command)
+        or not tokens
     )
     return CommandClassification(
         outside_or_unknown=outside,

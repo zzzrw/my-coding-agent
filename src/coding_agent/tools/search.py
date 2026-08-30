@@ -1,3 +1,4 @@
+from itertools import islice
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -59,6 +60,7 @@ class _ListTool:
                 permission_mode=context.permission_mode,
                 allow_outside_once=context.allow_outside_once,
             )
+            workspace = context.workspace.resolve()
             paths = (
                 _files(root)
                 if args.recursive
@@ -67,17 +69,19 @@ class _ListTool:
                 )
             )
             entries = [
-                str(p.relative_to(context.workspace))
-                if context.workspace.resolve() in p.resolve().parents
+                str(p.relative_to(workspace))
+                if workspace in p.resolve().parents
                 else str(p)
-                for p in paths
+                for p in islice(paths, args.max_entries + 1)
                 if p.is_file()
-            ][: args.max_entries]
+            ]
+            truncated = len(entries) > args.max_entries
+            entries = entries[: args.max_entries]
             return _result(
                 self.schema.name,
                 True,
                 "\n".join(entries),
-                truncated=len(entries) >= args.max_entries,
+                truncated=truncated,
             )
         except Exception as exc:  # noqa: BLE001
             return _result(self.schema.name, False, error=str(exc))
@@ -117,19 +121,23 @@ class _GrepTool:
                 for n, line in enumerate(text.splitlines(), 1):
                     if args.pattern in line:
                         try:
-                            display_path = str(path.relative_to(context.workspace.resolve()))
+                            display_path = str(
+                                path.relative_to(context.workspace.resolve())
+                            )
                         except ValueError:
                             display_path = str(path)
                         matches.append(f"{display_path}:{n}:{line}")
-                        if len(matches) >= args.max_results:
+                        if len(matches) > args.max_results:
                             break
-                if len(matches) >= args.max_results:
+                if len(matches) > args.max_results:
                     break
+            truncated = len(matches) > args.max_results
+            matches = matches[: args.max_results]
             return _result(
                 self.schema.name,
                 True,
                 "\n".join(matches),
-                truncated=len(matches) >= args.max_results,
+                truncated=truncated,
             )
         except Exception as exc:  # noqa: BLE001
             return _result(self.schema.name, False, error=str(exc))

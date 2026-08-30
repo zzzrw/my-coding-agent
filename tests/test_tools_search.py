@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,35 @@ async def test_search_results_are_bounded_and_sorted(tmp_path):
     )
     assert result.ok and result.metadata["truncated"] is True
     assert result.content.startswith("a.txt:1:")
+
+
+@pytest.mark.asyncio
+async def test_exact_search_and_listing_limits_are_not_marked_truncated(tmp_path):
+    (tmp_path / "only.txt").write_text("needle\n", encoding="utf-8")
+    context = ToolContext(workspace=tmp_path, permission_mode="full")
+    listing = await make_list_files_tool().execute(
+        {"max_entries": 1}, context=context, signal=asyncio.Event()
+    )
+    matches = await make_grep_files_tool().execute(
+        {"pattern": "needle", "max_results": 1},
+        context=context,
+        signal=asyncio.Event(),
+    )
+    assert listing.metadata["truncated"] is False
+    assert matches.metadata["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_uses_resolved_workspace_for_relative_display(tmp_path, monkeypatch):
+    (tmp_path / "only.txt").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path.parent)
+    result = await make_list_files_tool().execute(
+        {},
+        context=ToolContext(workspace=Path(tmp_path.name), permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert result.content == "only.txt"
 
 
 @pytest.mark.asyncio
