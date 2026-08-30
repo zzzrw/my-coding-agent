@@ -11,7 +11,10 @@ RuntimeEventType = Literal[
     "run_error",
     "turn_started",
     "turn_finished",
+    "user_message",
+    "assistant_started",
     "assistant_delta",
+    "assistant_finished",
     "assistant_message",
     "tool_started",
     "tool_finished",
@@ -19,6 +22,9 @@ RuntimeEventType = Literal[
     "approval_resolved",
     "status_changed",
     "context_updated",
+    "session_loaded",
+    "policy_changed",
+    "notice",
 ]
 
 

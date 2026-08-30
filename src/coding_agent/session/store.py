@@ -162,7 +162,9 @@ class SessionStore:
                 open_turns.discard(tid)
         return bool(open_turns)
 
-    def project_messages(self) -> list[SessionMessage]:
+    def project_messages(
+        self, *, include_open_turn: bool = False
+    ) -> list[SessionMessage]:
         open_turns: set[str] = set()
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
@@ -176,7 +178,7 @@ class SessionStore:
         active_assistant: tuple[int, str | None] | None = None
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
-            if tid in open_turns:
+            if not include_open_turn and tid in open_turns:
                 continue
             if (
                 record.type == "assistant_message"
