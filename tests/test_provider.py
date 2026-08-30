@@ -67,6 +67,26 @@ def test_tool_start_and_end_events_are_explicit():
     assert start.type == "tool_call_start" and end.type == "tool_call_end"
 
 
+def test_content_chunk_with_finish_reason_preserves_response_end():
+    events = ChatChunkParser().parse_many(
+        {
+            "choices": [
+                {
+                    "delta": {"content": "OK"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 1,
+                "total_tokens": 3,
+            },
+        }
+    )
+    assert [event.type for event in events] == ["text_delta", "response_end"]
+    assert events[-1].usage.total_tokens == 3
+
+
 def test_parser_keeps_multiple_tool_calls_in_one_chunk():
     events = ChatChunkParser().parse_many(
         {

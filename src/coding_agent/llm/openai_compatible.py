@@ -25,11 +25,11 @@ class ChatChunkParser:
         choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
         choice = choices[0] if choices else {}
         delta = choice.get("delta") or {}
+        events: list[LLMEvent] = []
         if delta.get("content") is not None:
-            return [LLMEvent(type="text_delta", text=delta["content"])]
+            events.append(LLMEvent(type="text_delta", text=delta["content"]))
         tool_calls = delta.get("tool_calls") or []
         if tool_calls:
-            events = []
             for call in tool_calls:
                 index = call.get("index", 0)
                 fn = call.get("function") or {}
@@ -57,26 +57,26 @@ class ChatChunkParser:
                             arguments_delta=args,
                         )
                     )
-            if events:
-                return events
         reason = choice.get("finish_reason")
         if reason:
             if reason == "tool_calls":
-                return [LLMEvent(type="tool_call_end", finish_reason=reason)]
-            usage = chunk.get("usage")
-            parsed_usage = None
-            if usage:
-                parsed_usage = Usage(
-                    input_tokens=usage.get("prompt_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0),
-                    total_tokens=usage.get("total_tokens", 0),
+                events.append(LLMEvent(type="tool_call_end", finish_reason=reason))
+            else:
+                usage = chunk.get("usage")
+                parsed_usage = None
+                if usage:
+                    parsed_usage = Usage(
+                        input_tokens=usage.get("prompt_tokens", 0),
+                        output_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                    )
+                events.append(
+                    LLMEvent(type="response_end", finish_reason=reason, usage=parsed_usage)
                 )
-            return [
-                LLMEvent(type="response_end", finish_reason=reason, usage=parsed_usage)
-            ]
+            return events
         usage = chunk.get("usage") if isinstance(chunk, dict) else None
         if usage:
-            return [
+            events.append(
                 LLMEvent(
                     type="response_end",
                     usage=Usage(
@@ -85,8 +85,8 @@ class ChatChunkParser:
                         total_tokens=usage.get("total_tokens", 0),
                     ),
                 )
-            ]
-        return [LLMEvent(type="response_end")]
+            )
+        return events or [LLMEvent(type="response_end")]
 
 
 class OpenAICompatibleProvider:
