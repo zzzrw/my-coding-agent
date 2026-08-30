@@ -76,8 +76,10 @@ class ContextView(StrictModel):
 
 class ApprovalRequest(StrictModel):
     request_id: str
+    run_id: str
     tool_call_id: str
     tool_name: str
     risk_level: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
+    status: Literal["pending", "approved", "denied", "cancelled"] = "pending"
