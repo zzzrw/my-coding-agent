@@ -21,7 +21,7 @@ SKIP_DIRS = {
 class _ListArgs(BaseModel):
     path: str = "."
     max_entries: int = Field(default=200, ge=1, le=2000)
-    recursive: bool = True
+    recursive: bool = False
 
 
 class _GrepArgs(BaseModel):
@@ -116,9 +116,11 @@ class _GrepTool:
                     continue
                 for n, line in enumerate(text.splitlines(), 1):
                     if args.pattern in line:
-                        matches.append(
-                            f"{path.relative_to(context.workspace)}:{n}:{line}"
-                        )
+                        try:
+                            display_path = str(path.relative_to(context.workspace.resolve()))
+                        except ValueError:
+                            display_path = str(path)
+                        matches.append(f"{display_path}:{n}:{line}")
                         if len(matches) >= args.max_results:
                             break
                 if len(matches) >= args.max_results:

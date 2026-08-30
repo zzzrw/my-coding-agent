@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.policy.command import classify_command
 from coding_agent.tools.models import ToolSchema
@@ -77,3 +79,8 @@ def test_catastrophic_command_patterns_are_always_denied():
             ).kind
             == "deny"
         )
+
+
+@pytest.mark.parametrize("command", ["rm --no-preserve-root -rf /", "rm -i -rf /", "rm -rf -- /"])
+def test_root_removal_option_variants_are_always_denied(command):
+    assert classify_command(command).catastrophic is True

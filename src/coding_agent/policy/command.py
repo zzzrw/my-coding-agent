@@ -1,4 +1,5 @@
 import re
+import shlex
 
 from pydantic import BaseModel
 
@@ -10,7 +11,6 @@ class CommandClassification(BaseModel):
 
 
 _CATASTROPHIC = [
-    r"rm\s+(?:(?:-[rf]+|--(?:recursive|force))\s+|--\s+)*[/~]",
     r"\bmkfs(?:\.|\s)",
     r"\bdd\s+.*of=/dev/",
     r"\b(shutdown|reboot|poweroff)\b",
@@ -22,6 +22,18 @@ _CATASTROPHIC = [
 
 
 def classify_command(command: str) -> CommandClassification:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = []
+    for index, token in enumerate(tokens):
+        if token != "rm":
+            continue
+        operands = [item for item in tokens[index + 1 :] if item == "--" or not item.startswith("-")]
+        if operands and operands[0] == "--":
+            operands = operands[1:]
+        if any(item in {"/", "~", "/*"} for item in operands):
+            return CommandClassification(catastrophic=True, reason="catastrophic command")
     for pattern in _CATASTROPHIC:
         if re.search(pattern, command, re.IGNORECASE):
             return CommandClassification(

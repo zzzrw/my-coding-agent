@@ -57,3 +57,16 @@ async def test_search_supports_non_recursive_and_include_filter(tmp_path):
     )
     assert "top.py" in listing.content and "deep.py" not in listing.content
     assert "top.py" in result.content and "top.txt" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_grep_approved_external_path_returns_absolute_match(tmp_path):
+    outside = tmp_path.parent / "coding-agent-search-outside.txt"
+    outside.write_text("needle\n", encoding="utf-8")
+    result = await make_grep_files_tool().execute(
+        {"pattern": "needle", "path": str(outside.parent)},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert str(outside) in result.content
