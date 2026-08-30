@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import json
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from coding_agent.runtime.models import Message
+from coding_agent.tools.models import ToolResult
+
+from .models import SessionHeader, SessionMessage, SessionRecord, SessionSummary
+
+
+class SessionStore:
+    def __init__(self, path: Path, header: SessionHeader, records: list[SessionRecord], notice: str | None = None) -> None:
+        self._path = path
+        self._header = header
+        self._records = records
+        self._notice = notice
+        self._lock = threading.Lock()
+
+    @classmethod
+    def create(cls, root: Path, *, session_id: str | None = None, workspace: str, model: str, context_window: int, title: str = "New session") -> "SessionStore":
+        root.mkdir(parents=True, exist_ok=True)
+        sid = session_id or uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        header = SessionHeader(session_id=sid, workspace=workspace, model=model, title=title, created_at=now, updated_at=now, context_window=context_window)
+        path = root / f"{sid}.jsonl"
+        path.write_text(json.dumps(header.model_dump(mode="json"), ensure_ascii=True) + "\n", encoding="utf-8")
+        return cls(path, header, [])
+
+    @classmethod
+    def open(cls, root: Path, session_id: str) -> "SessionStore":
+        path = root / f"{session_id}.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            raise ValueError("empty session file")
+        try:
+            header = SessionHeader.model_validate(json.loads(lines[0]))
+        except Exception as exc:
+            raise ValueError("invalid session header") from exc
+        records: list[SessionRecord] = []
+        notice = None
+        for index, line in enumerate(lines[1:], 1):
+            try:
+                records.append(SessionRecord.model_validate(json.loads(line)))
+            except Exception as exc:
+                if index == len(lines) - 1:
+                    notice = f"corrupt final session record ignored: {exc}"
+                    break
+                raise ValueError(f"invalid session record at line {index + 1}") from exc
+        return cls(path, header, records, notice)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def session_id(self) -> str:
+        return self._header.session_id
+
+    @property
+    def header(self) -> SessionHeader:
+        return self._header
+
+    @property
+    def load_notice(self) -> str | None:
+        return self._notice
+
+    def append(self, record: SessionRecord) -> None:
+        with self._lock:
+            expected = len(self._records)
+            if record.seq != expected:
+                raise ValueError(f"record seq must be {expected}")
+            parent = self._records[-1].id if self._records else None
+            if record.parent_id != parent:
+                raise ValueError("record parent_id does not match active leaf")
+            self._records.append(record)
+            self._header = self._header.model_copy(update={"updated_at": record.timestamp})
+            self._write()
+
+    def append_new(self, record_type: str, payload: dict[str, Any], *, run_id: str | None = None, turn_id: str | None = None) -> SessionRecord:
+        record = SessionRecord(id=uuid.uuid4().hex, seq=len(self._records), timestamp=datetime.now(timezone.utc), type=record_type, payload=payload, parent_id=self._records[-1].id if self._records else None, run_id=run_id, turn_id=turn_id)
+        self.append(record)
+        return record
+
+    def _write(self) -> None:
+        lines = [self._header.model_dump(mode="json")] + [r.model_dump(mode="json") for r in self._records]
+        self._path.write_text("\n".join(json.dumps(x, ensure_ascii=True) for x in lines) + "\n", encoding="utf-8")
+
+    def records(self) -> list[SessionRecord]:
+        return list(self._records)
+
+    def has_interrupted_turn(self) -> bool:
+        open_turns: set[str] = set()
+        for record in self._records:
+            tid = record.turn_id or record.payload.get("turn_id")
+            if record.type == "turn_start" and tid:
+                open_turns.add(tid)
+            elif record.type == "turn_end" and tid:
+                open_turns.discard(tid)
+        return bool(open_turns)
+
+    def project_messages(self) -> list[SessionMessage]:
+        open_turns: set[str] = set()
+        for record in self._records:
+            tid = record.turn_id or record.payload.get("turn_id")
+            if record.type == "turn_start" and tid:
+                open_turns.add(tid)
+            elif record.type == "turn_end" and tid:
+                open_turns.discard(tid)
+        projected: list[SessionMessage] = []
+        pending_calls: set[str] = set()
+        completed_calls: set[str] = set()
+        for record in self._records:
+            if record.turn_id and record.turn_id in open_turns:
+                continue
+            if record.type == "assistant_message" and record.payload.get("complete") is True:
+                msg = Message.model_validate(record.payload["message"])
+                pending_calls.update(call.id for call in msg.tool_calls)
+                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=msg))
+            elif record.type == "user_message":
+                msg = Message.model_validate(record.payload["message"])
+                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=msg))
+            elif record.type == "tool_result":
+                result = ToolResult.model_validate(record.payload["result"])
+                if result.tool_call_id not in pending_calls or result.tool_call_id in completed_calls:
+                    raise ValueError(f"tool_result does not match preceding tool call: {result.tool_call_id}")
+                completed_calls.add(result.tool_call_id)
+                projected.append(SessionMessage(record_id=record.id, turn_id=record.turn_id, seq=record.seq, message=Message(role="tool", content=result.content, tool_call_id=result.tool_call_id, name=result.tool_name)))
+        return projected
+
+    @classmethod
+    def list_sessions(cls, root: Path) -> list[SessionSummary]:
+        summaries: list[SessionSummary] = []
+        for path in root.glob("*.jsonl"):
+            try:
+                store = cls.open(root, path.stem)
+            except ValueError:
+                continue
+            title = store.header.title
+            if title == "New session":
+                for record in store.records():
+                    if record.type == "user_message":
+                        try:
+                            title = Message.model_validate(record.payload["message"]).content or title
+                        except Exception:
+                            pass
+                        break
+            status = "interrupted" if store.has_interrupted_turn() else "idle"
+            summaries.append(SessionSummary(id=store.session_id, workspace=store.header.workspace, created_at=store.header.created_at, updated_at=store.header.updated_at, title=title[:80], last_status=status))
+        return sorted(summaries, key=lambda s: s.updated_at, reverse=True)
