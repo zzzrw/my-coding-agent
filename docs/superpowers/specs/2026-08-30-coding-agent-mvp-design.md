@@ -537,6 +537,7 @@ class ContextPolicy(Protocol):
         self,
         history: list[SessionMessage],
         *,
+        system_prompt: Message,
         context_window: int,
         usage: Usage | None,
         force: bool = False,
