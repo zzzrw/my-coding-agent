@@ -40,11 +40,17 @@ def _rm_is_catastrophic(tokens: list[str]) -> bool:
         ]
         if operands and operands[0] == "--":
             operands = operands[1:]
+        destructive_flags = any(
+            item in {"--recursive", "--force"}
+            or (item.startswith("-") and ("r" in item or "f" in item))
+            for item in tokens[index + 1 :]
+        )
         if any(
             item == "/"
             or item == "~"
             or item in {"$HOME", "${HOME}"}
             or item.startswith(("/*", "/home", "/root", "~/", "$HOME/", "${HOME}/"))
+            or (destructive_flags and ("$" in item or ".." in item))
             for item in operands
         ):
             return True
@@ -55,7 +61,21 @@ def _git_push_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if Path(token).name != "git" or tokens[index + 1 : index + 2] != ["push"]:
             continue
-        return any(item == "-f" or item.startswith("--force") for item in tokens[index + 2 :])
+        return any(
+            item == "-f" or item.startswith("--force") for item in tokens[index + 2 :]
+        )
+    return False
+
+
+def _nested_shell_is_catastrophic(tokens: list[str]) -> bool:
+    shells = {"sh", "bash", "zsh", "dash", "fish"}
+    for index, token in enumerate(tokens[:-2]):
+        if (
+            Path(token).name in shells
+            and tokens[index + 1] == "-c"
+            and classify_command(tokens[index + 2]).catastrophic
+        ):
+            return True
     return False
 
 
@@ -64,7 +84,11 @@ def classify_command(command: str) -> CommandClassification:
         tokens = shlex.split(command)
     except ValueError:
         tokens = []
-    if _rm_is_catastrophic(tokens) or _git_push_is_catastrophic(tokens):
+    if (
+        _rm_is_catastrophic(tokens)
+        or _git_push_is_catastrophic(tokens)
+        or _nested_shell_is_catastrophic(tokens)
+    ):
         return CommandClassification(catastrophic=True, reason="catastrophic command")
     for pattern in _CATASTROPHIC:
         if re.search(pattern, command, re.IGNORECASE):

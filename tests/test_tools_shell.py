@@ -52,3 +52,16 @@ async def test_run_command_cancellation_kills_process_group(tmp_path):
     result = await asyncio.wait_for(task, timeout=3)
     assert result.ok is False
     assert result.error == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_successful_shell_cleans_background_descendants(tmp_path):
+    marker = tmp_path / "late-marker"
+    result = await make_run_command_tool().execute(
+        {"command": "{ sleep 0.2; touch late-marker; } >/dev/null 2>&1 &"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    await asyncio.sleep(0.3)
+    assert result.ok is True
+    assert not marker.exists()

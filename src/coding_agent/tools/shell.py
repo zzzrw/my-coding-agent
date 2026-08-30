@@ -68,6 +68,7 @@ class _ShellTool:
                 except TimeoutError:
                     pass
             out, _ = communicate.result()
+            await self._terminate_remaining_group(proc.pid)
             return _result(
                 self.schema.name,
                 proc.returncode == 0,
@@ -78,6 +79,20 @@ class _ShellTool:
             )
         except Exception as exc:  # noqa: BLE001
             return _result(self.schema.name, False, error=str(exc))
+
+    @staticmethod
+    async def _terminate_remaining_group(process_group_id: int) -> None:
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return
+        os.killpg(process_group_id, signal_mod.SIGTERM)
+        await asyncio.sleep(0.05)
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return
+        os.killpg(process_group_id, signal_mod.SIGKILL)
 
 
 def make_run_command_tool():
