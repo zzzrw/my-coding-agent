@@ -19,7 +19,12 @@ class BlockingRunner:
 
 
 def make_runtime(tmp_path, runner=None):
-    store = SessionStore.create(tmp_path / "sessions", workspace=str(tmp_path), model="fake", context_window=1000)
+    store = SessionStore.create(
+        tmp_path / "sessions",
+        workspace=str(tmp_path),
+        model="fake",
+        context_window=1000,
+    )
     runner = runner or BlockingRunner(asyncio.Event())
     return AgentRuntime(
         store=store,
@@ -51,6 +56,7 @@ async def test_subscribers_receive_events_and_unsubscribe(tmp_path):
     unsubscribe = runtime.subscribe(lambda event: events.append(event))
     # A synchronous callback is intentionally tolerated by the test adapter.
     unsubscribe()
+
     async def record(event):
         events.append(event)
 
