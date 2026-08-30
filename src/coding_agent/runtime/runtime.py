@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Literal
@@ -15,8 +16,13 @@ from coding_agent.session.store import SessionStore
 
 
 class _ApprovalBroker:
-    def __init__(self, publish: Callable[[RuntimeEvent], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        publish: Callable[[RuntimeEvent], Awaitable[None]],
+        set_status: Callable[[str], None],
+    ) -> None:
         self._publish = publish
+        self._set_status = set_status
         self.pending: ApprovalRequest | None = None
         self._future: asyncio.Future[str] | None = None
 
@@ -26,6 +32,7 @@ class _ApprovalBroker:
         if self.pending is not None:
             return "cancelled"
         self.pending = request
+        self._set_status("waiting_approval")
         self._future = asyncio.get_running_loop().create_future()
         await self._publish(
             RuntimeEvent(
@@ -39,12 +46,19 @@ class _ApprovalBroker:
         finally:
             self.pending = None
             self._future = None
+            self._set_status("running")
 
     async def resolve(
         self, request_id: str, decision: Literal["approve", "deny"]
     ) -> None:
         request = self.pending
-        if request is None or request.request_id != request_id or self._future is None:
+        if (
+            request is None
+            or request.request_id != request_id
+            or self._future is None
+            or self._future.done()
+            or request.status != "pending"
+        ):
             raise RuntimeError("approval not pending")
         status = "approved" if decision == "approve" else "denied"
         request = request.model_copy(update={"status": status})
@@ -64,8 +78,24 @@ class _ApprovalBroker:
             self._future.set_result(decision)
 
     def cancel_all(self) -> None:
-        if self._future is not None and not self._future.done():
-            self._future.set_result("cancelled")
+        if self._future is None or self._future.done() or self.pending is None:
+            return
+        request = self.pending.model_copy(update={"status": "cancelled"})
+        self.pending = request
+        asyncio.create_task(
+            self._publish(
+                RuntimeEvent(
+                    type="approval_resolved",
+                    run_id=request.run_id,
+                    payload={
+                        "request_id": request.request_id,
+                        "decision": "deny",
+                        "status": "cancelled",
+                    },
+                )
+            )
+        )
+        self._future.set_result("cancelled")
 
 
 class AgentRuntime:
@@ -95,7 +125,7 @@ class AgentRuntime:
         self._task: asyncio.Task[None] | None = None
         self._signal: asyncio.Event | None = None
         self._run_id: str | None = None
-        self._broker = _ApprovalBroker(self._publish)
+        self._broker = _ApprovalBroker(self._publish, self._set_status)
         self._runner = self._make_runner()
 
     def _make_runner(self) -> AgentRunner:
@@ -139,6 +169,9 @@ class AgentRuntime:
         await self._publish(
             RuntimeEvent(type=kind, run_id=self._run_id, payload=payload)
         )
+
+    def _set_status(self, status: str) -> None:
+        self._status = self._status.model_copy(update={"status": status})
 
     async def submit(self, prompt: str) -> str:
         if self._task is not None and not self._task.done():
@@ -218,7 +251,13 @@ class AgentRuntime:
         if self._signal:
             self._signal.set()
         self._broker.cancel_all()
-        await self._task
+        task = self._task
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 5.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         self._status = self._status.model_copy(update={"status": "idle"})
 
     async def resolve_approval(
@@ -253,6 +292,7 @@ class AgentRuntime:
         if self._task is not None and not self._task.done():
             raise RuntimeError("active run")
         self.store = SessionStore.open(self.store.path.parent, session_id)
+        self._model = self.store.header.model
         self._permission_mode = "default"
         self._runner = self._make_runner()
         await self._publish(
