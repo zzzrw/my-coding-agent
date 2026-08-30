@@ -114,3 +114,16 @@ async def test_grep_approved_external_path_returns_absolute_match(tmp_path):
     )
     assert result.ok is True
     assert str(outside) in result.content
+
+
+@pytest.mark.asyncio
+async def test_grep_bounds_giant_matching_line(tmp_path):
+    (tmp_path / "huge.txt").write_text("needle" + "x" * 1_000_000, encoding="utf-8")
+    result = await make_grep_files_tool().execute(
+        {"pattern": "needle", "max_results": 1},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert len(result.content) <= 20_000
+    assert result.metadata["truncated"] is True

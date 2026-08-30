@@ -1,3 +1,4 @@
+import os
 from itertools import islice
 from pathlib import Path
 
@@ -17,6 +18,9 @@ SKIP_DIRS = {
     ".next",
     "target",
 }
+MAX_GREP_LINE_CHARS = 2_000
+MAX_GREP_FILE_CHARS = 200_000
+MAX_GREP_OUTPUT_CHARS = 20_000
 
 
 class _ListArgs(BaseModel):
@@ -33,12 +37,24 @@ class _GrepArgs(BaseModel):
 
 
 def _files(root: Path):
-    for path in sorted(root.rglob("*")):
-        if any(part in SKIP_DIRS for part in path.parts):
-            continue
-        if path.is_symlink():
-            continue
-        yield path
+    for directory, names, files in os.walk(root, followlinks=False):
+        names[:] = sorted(name for name in names if name not in SKIP_DIRS)
+        for name in sorted(files):
+            path = Path(directory) / name
+            if not path.is_symlink():
+                yield path
+
+
+def _is_text_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as stream:
+            sample = stream.read(4096)
+        if b"\x00" in sample:
+            return False
+        sample.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return True
 
 
 class _ListTool:
@@ -107,6 +123,8 @@ class _GrepTool:
                 allow_outside_once=context.allow_outside_once,
             )
             matches = []
+            output_chars = 0
+            truncated = False
             for path in _files(root):
                 if signal.is_set():
                     return _result(self.schema.name, False, error="cancelled")
@@ -114,24 +132,60 @@ class _GrepTool:
                     continue
                 if args.include and not path.match(args.include):
                     continue
+                if not _is_text_file(path):
+                    continue
                 try:
-                    text = path.read_text(encoding="utf-8")
+                    stream = path.open(encoding="utf-8")
                 except (UnicodeDecodeError, OSError):
                     continue
-                for n, line in enumerate(text.splitlines(), 1):
-                    if args.pattern in line:
+                read_chars = 0
+                with stream:
+                    line_number = 0
+                    while True:
+                        raw_line = stream.readline(MAX_GREP_LINE_CHARS + 1)
+                        if not raw_line:
+                            break
+                        line_number += 1
+                        read_chars += len(raw_line)
+                        if read_chars > MAX_GREP_FILE_CHARS:
+                            truncated = True
+                            break
+                        line_truncated = (
+                            not raw_line.endswith(("\n", "\r"))
+                            and len(raw_line) > MAX_GREP_LINE_CHARS
+                        )
+                        while line_truncated and not raw_line.endswith(("\n", "\r")):
+                            remainder = stream.readline(MAX_GREP_LINE_CHARS + 1)
+                            if not remainder:
+                                break
+                            read_chars += len(remainder)
+                            if remainder.endswith(("\n", "\r")):
+                                break
+                            if read_chars > MAX_GREP_FILE_CHARS:
+                                break
+                        line = raw_line.rstrip("\r\n")
+                        display_line = line[:MAX_GREP_LINE_CHARS]
+                        if args.pattern not in line:
+                            truncated = truncated or line_truncated
+                            continue
                         try:
                             display_path = str(
                                 path.relative_to(context.workspace.resolve())
                             )
                         except ValueError:
                             display_path = str(path)
-                        matches.append(f"{display_path}:{n}:{line}")
+                        match = f"{display_path}:{line_number}:{display_line}"
+                        if output_chars + len(match) > MAX_GREP_OUTPUT_CHARS:
+                            truncated = True
+                            break
+                        matches.append(match)
+                        output_chars += len(match) + 1
+                        truncated = truncated or line_truncated
                         if len(matches) > args.max_results:
                             break
-                if len(matches) > args.max_results:
+                if truncated or len(matches) > args.max_results:
                     break
-            truncated = len(matches) > args.max_results
+            truncated = truncated or len(matches) > args.max_results
             matches = matches[: args.max_results]
             return _result(
                 self.schema.name,

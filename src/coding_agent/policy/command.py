@@ -69,11 +69,25 @@ def _git_push_is_catastrophic(tokens: list[str]) -> bool:
 
 def _nested_shell_is_catastrophic(tokens: list[str]) -> bool:
     shells = {"sh", "bash", "zsh", "dash", "fish"}
-    for index, token in enumerate(tokens[:-2]):
+    for index, token in enumerate(tokens):
+        if Path(token).name not in shells:
+            continue
+        command_index = None
+        for option_index in range(index + 1, len(tokens)):
+            option = tokens[option_index]
+            if option == "--":
+                continue
+            if option.startswith("-") and "c" in option[1:]:
+                command_index = option_index + 1
+                if command_index < len(tokens) and tokens[command_index] == "--":
+                    command_index += 1
+                break
+            if not option.startswith("-"):
+                break
         if (
-            Path(token).name in shells
-            and tokens[index + 1] == "-c"
-            and classify_command(tokens[index + 2]).catastrophic
+            command_index is not None
+            and command_index < len(tokens)
+            and classify_command(tokens[command_index]).catastrophic
         ):
             return True
     return False
