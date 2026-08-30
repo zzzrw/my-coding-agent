@@ -1,0 +1,54 @@
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from coding_agent.session.models import ApprovalRequest
+
+
+class TranscriptItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["user", "assistant", "tool", "system"]
+    item_id: str
+    text: str = ""
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_status: Literal["running", "success", "error", "cancelled"] | None = None
+
+
+class TuiState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str | None = None
+    workspace: str
+    git_branch: str | None = None
+    model: str
+    reasoning: str | None = None
+    context_used: int = 0
+    context_window: int = 0
+    context_estimated: bool = False
+    policy: Literal["default", "workspace", "full"] = "default"
+    status: Literal["idle", "running", "waiting_approval", "error", "aborted"] = "idle"
+    active_run_id: str | None = None
+    active_turn_id: str | None = None
+    transcript: list[TranscriptItem] = Field(default_factory=list)
+    active_tool_call_id: str | None = None
+    pending_approval: ApprovalRequest | None = None
+    input_text: str = ""
+
+
+def initial_state(
+    workspace: str,
+    model: str,
+    *,
+    session_id: str | None = None,
+    context_window: int = 0,
+    policy: Literal["default", "workspace", "full"] = "default",
+) -> TuiState:
+    return TuiState(
+        session_id=session_id,
+        workspace=workspace,
+        model=model,
+        context_window=context_window,
+        policy=policy,
+    )
