@@ -132,6 +132,7 @@ class AgentRuntime:
         self._task: asyncio.Task[None] | None = None
         self._signal: asyncio.Event | None = None
         self._run_id: str | None = None
+        self._turn_id: str | None = None
         self._broker = _ApprovalBroker(self._publish, self._set_status)
         self._runner = self._make_runner()
 
@@ -190,9 +191,14 @@ class AgentRuntime:
             except Exception:  # noqa: BLE001, S112 - sink isolation is intentional
                 continue
 
-    async def _emit(self, kind: str, **payload) -> None:
+    async def _emit(self, kind: str, *, turn_id: str | None = None, **payload) -> None:
         await self._publish(
-            RuntimeEvent(type=kind, run_id=self._run_id, payload=payload)
+            RuntimeEvent(
+                type=kind,
+                run_id=self._run_id,
+                turn_id=turn_id if turn_id is not None else self._turn_id,
+                payload=payload,
+            )
         )
 
     def _set_status(self, status: str) -> None:
@@ -203,6 +209,7 @@ class AgentRuntime:
             raise RuntimeError("active run")
         run_id, turn_id = uuid.uuid4().hex, uuid.uuid4().hex
         self._run_id = run_id
+        self._turn_id = turn_id
         self._signal = asyncio.Event()
         self._status = RuntimeStatus(status="running", run_id=run_id, turn_id=turn_id)
         self.store.append_new(
@@ -219,6 +226,13 @@ class AgentRuntime:
             session_id=self.session_id,
             model=self._model,
             policy=self._permission_mode,
+            turn_id=turn_id,
+        )
+        await self._emit(
+            "user_message",
+            message_id=f"user-{turn_id}",
+            text=prompt,
+            turn_id=turn_id,
         )
         self._task = asyncio.create_task(
             self._run(prompt, run_id, turn_id, self._signal)
@@ -282,6 +296,7 @@ class AgentRuntime:
             self._task = None
             self._signal = None
             self._run_id = None
+            self._turn_id = None
             if self._status.status != "error":
                 self._status = self._status.model_copy(
                     update={
@@ -313,10 +328,11 @@ class AgentRuntime:
         await self._broker.resolve(request_id, decision)
 
     async def set_permission(self, mode: PermissionMode) -> None:
+        previous_mode = self._permission_mode
         self._permission_mode = mode
         self._runner.permission_mode = mode
         self.store.append_new("policy_changed", {"policy": mode})
-        await self._emit("policy_changed", policy=mode)
+        await self._emit("policy_changed", policy=mode, previous_policy=previous_mode)
 
     async def new_session(self) -> str:
         if self._task is not None and not self._task.done():
@@ -332,7 +348,14 @@ class AgentRuntime:
         self._status = RuntimeStatus()
         self._runner = self._make_runner()
         await self._publish(
-            RuntimeEvent(type="session_loaded", payload={"session_id": self.session_id})
+            RuntimeEvent(
+                type="session_loaded",
+                payload={
+                    "session_id": self.session_id,
+                    "workspace": self.store.header.workspace,
+                    "model": self.store.header.model,
+                },
+            )
         )
         return self.session_id
 
@@ -349,7 +372,14 @@ class AgentRuntime:
         self._status = RuntimeStatus()
         self._runner = self._make_runner()
         await self._publish(
-            RuntimeEvent(type="session_loaded", payload={"session_id": session_id})
+            RuntimeEvent(
+                type="session_loaded",
+                payload={
+                    "session_id": session_id,
+                    "workspace": self.store.header.workspace,
+                    "model": self.store.header.model,
+                },
+            )
         )
         if self.store.load_notice:
             await self._publish(

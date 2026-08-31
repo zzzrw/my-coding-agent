@@ -69,6 +69,29 @@ async def test_submit_is_nonblocking_and_rejects_busy_run(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_submit_publishes_user_message_and_turn_id(tmp_path):
+    runtime, runner = make_runtime(tmp_path)
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    run_id = await runtime.submit("hello")
+    runner.gate.set()
+    await asyncio.sleep(0.05)
+
+    started = next(event for event in events if event.type == "run_started")
+    message = next(event for event in events if event.type == "user_message")
+    assert started.run_id == run_id
+    assert started.turn_id
+    assert message.run_id == run_id
+    assert message.turn_id == started.turn_id
+    assert message.payload["message_id"]
+    assert message.payload["text"] == "hello"
+
+
+@pytest.mark.asyncio
 async def test_subscribers_receive_events_and_unsubscribe(tmp_path):
     runtime, runner = make_runtime(tmp_path)
     events = []
@@ -84,6 +107,25 @@ async def test_subscribers_receive_events_and_unsubscribe(tmp_path):
     runner.gate.set()
     await asyncio.sleep(0.05)
     assert any(event.type == "run_started" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_session_loaded_publishes_restored_workspace_and_model(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    session_id = runtime.session_id
+    await runtime.new_session()
+    await runtime.resume(session_id)
+
+    loaded = [event for event in events if event.type == "session_loaded"][-1]
+    assert loaded.payload["session_id"] == session_id
+    assert loaded.payload["workspace"] == str(tmp_path)
+    assert loaded.payload["model"] == "fake"
 
 
 @pytest.mark.asyncio
@@ -122,6 +164,21 @@ async def test_approval_cannot_be_resolved_twice():
     assert await pending == "approve"
     assert statuses == ["waiting_approval", "running"]
     assert [event.type for event in events].count("approval_resolved") == 1
+
+
+@pytest.mark.asyncio
+async def test_set_permission_publishes_previous_policy(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    await runtime.set_permission("full")
+
+    changed = next(event for event in events if event.type == "policy_changed")
+    assert changed.payload == {"policy": "full", "previous_policy": "default"}
 
 
 @pytest.mark.asyncio
