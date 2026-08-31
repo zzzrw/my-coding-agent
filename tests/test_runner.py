@@ -104,6 +104,22 @@ async def test_tool_call_then_final_answer(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completed_tool_call_survives_usage_only_response_end(tmp_path):
+    response = [
+        *tool_response()[:-1],
+        LLMEvent(type="response_end", finish_reason="tool_calls"),
+        LLMEvent(type="response_end"),
+    ]
+    provider = ScriptedProvider([response, text_response("ready")])
+    runner, _, _, executor = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert len(executor.calls) == 1
+    assert outcome.reason == "completed" and outcome.final_text == "ready"
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_is_returned_to_model_without_execution(tmp_path):
     provider = ScriptedProvider([tool_response('{"path":'), text_response("invalid")])
     runner, store, _, executor = make_runner(tmp_path, provider)
@@ -115,6 +131,51 @@ async def test_invalid_json_is_returned_to_model_without_execution(tmp_path):
     assert any(
         item.message.role == "tool" and "invalid" in (item.message.content or "")
         for item in projected
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments", ["[]", "null", '"text"'])
+async def test_non_object_json_arguments_are_structured_tool_errors(
+    tmp_path, arguments
+):
+    provider = ScriptedProvider([tool_response(arguments), text_response("recovered")])
+    runner, store, _, executor = make_runner(tmp_path, provider)
+
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+
+    assert outcome.reason == "completed"
+    assert outcome.final_text == "recovered"
+    assert executor.calls == []
+    assert any(
+        item.message.role == "tool"
+        and "invalid tool arguments" in (item.message.content or "")
+        for item in store.project_messages(include_open_turn=True)
+    )
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_final_length_finish_reason_never_executes_tool_calls(tmp_path):
+    response = [
+        *tool_response()[:-1],
+        LLMEvent(type="tool_call_end", finish_reason="tool_calls"),
+        LLMEvent(type="response_end", finish_reason="length"),
+    ]
+    runner, _, events, executor = make_runner(tmp_path, ScriptedProvider([response]))
+
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+
+    assert outcome.reason == "completed"
+    assert executor.calls == []
+    assert any(
+        event.type == "notice"
+        and event.payload["message"] == "truncated tool call was not executed"
+        for event in events
     )
 
 
@@ -137,6 +198,26 @@ async def test_truncated_tool_call_is_not_executed(tmp_path):
         "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
     )
     assert outcome.reason == "completed" and executor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_call_without_explicit_completion_is_not_executed(tmp_path):
+    response = tool_response()[:-1]
+    runner, _, events, executor = make_runner(tmp_path, ScriptedProvider([response]))
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert executor.calls == []
+    assert outcome.reason == "completed"
+    assert any(
+        event.type == "notice"
+        and event.payload
+        == {
+            "level": "error",
+            "message": "truncated tool call was not executed",
+        }
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

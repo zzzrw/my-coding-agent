@@ -13,6 +13,15 @@ from coding_agent.runtime.models import Message, RuntimeStatus, TurnOutcome
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.session.models import ApprovalRequest, SessionSummary
 from coding_agent.session.store import SessionStore
+from coding_agent.tools.models import ToolResult
+
+
+def _projected_tool_status(result: ToolResult) -> str:
+    if result.ok:
+        return "success"
+    if result.error and "cancelled" in result.error.lower():
+        return "cancelled"
+    return "error"
 
 
 class _ApprovalBroker:
@@ -130,9 +139,13 @@ class AgentRuntime:
         self._status = RuntimeStatus()
         self._last_outcome: TurnOutcome | None = None
         self._task: asyncio.Task[None] | None = None
+        self._submit_in_progress = False
+        self._operation_in_progress = False
         self._signal: asyncio.Event | None = None
         self._run_id: str | None = None
         self._turn_id: str | None = None
+        self._forced_aborts: set[str] = set()
+        self._terminal_events: set[str] = set()
         self._broker = _ApprovalBroker(self._publish, self._set_status)
         self._runner = self._make_runner()
 
@@ -204,40 +217,79 @@ class AgentRuntime:
     def _set_status(self, status: str) -> None:
         self._status = self._status.model_copy(update={"status": status})
 
-    async def submit(self, prompt: str) -> str:
-        if self._task is not None and not self._task.done():
+    def _ensure_no_active_run(self) -> None:
+        if (
+            self._operation_in_progress
+            or self._submit_in_progress
+            or (self._task is not None and not self._task.done())
+        ):
             raise RuntimeError("active run")
-        run_id, turn_id = uuid.uuid4().hex, uuid.uuid4().hex
-        self._run_id = run_id
-        self._turn_id = turn_id
-        self._signal = asyncio.Event()
-        self._status = RuntimeStatus(status="running", run_id=run_id, turn_id=turn_id)
-        self.store.append_new(
-            "turn_start", {"turn_id": turn_id}, run_id=run_id, turn_id=turn_id
-        )
-        self.store.append_new(
-            "user_message",
-            {"message": Message(role="user", content=prompt)},
-            run_id=run_id,
-            turn_id=turn_id,
-        )
-        await self._emit(
-            "run_started",
-            session_id=self.session_id,
-            model=self._model,
-            policy=self._permission_mode,
-            turn_id=turn_id,
-        )
-        await self._emit(
-            "user_message",
-            message_id=f"user-{turn_id}",
-            text=prompt,
-            turn_id=turn_id,
-        )
-        self._task = asyncio.create_task(
-            self._run(prompt, run_id, turn_id, self._signal)
-        )
-        return run_id
+
+    async def _reserve_operation(self) -> None:
+        self._ensure_no_active_run()
+        self._operation_in_progress = True
+
+    def _release_operation(self) -> None:
+        self._operation_in_progress = False
+
+    async def submit(self, prompt: str) -> str:
+        await self._reserve_operation()
+        self._submit_in_progress = True
+        run_id: str | None = None
+        turn_id: str | None = None
+        try:
+            run_id, turn_id = uuid.uuid4().hex, uuid.uuid4().hex
+            self._run_id = run_id
+            self._turn_id = turn_id
+            self._signal = asyncio.Event()
+            self._status = RuntimeStatus(
+                status="running", run_id=run_id, turn_id=turn_id
+            )
+            self.store.append_new(
+                "turn_start", {"turn_id": turn_id}, run_id=run_id, turn_id=turn_id
+            )
+            self.store.append_new(
+                "user_message",
+                {"message": Message(role="user", content=prompt)},
+                run_id=run_id,
+                turn_id=turn_id,
+            )
+            await self._emit(
+                "run_started",
+                session_id=self.session_id,
+                model=self._model,
+                policy=self._permission_mode,
+                turn_id=turn_id,
+            )
+            await self._emit(
+                "user_message",
+                message_id=f"user-{turn_id}",
+                text=prompt,
+                turn_id=turn_id,
+            )
+            self._task = asyncio.create_task(
+                self._run(prompt, run_id, turn_id, self._signal)
+            )
+            self._release_operation()
+            return run_id
+        except BaseException:
+            if run_id is not None and turn_id is not None:
+                with contextlib.suppress(Exception):
+                    self.store.append_new(
+                        "turn_end",
+                        {"reason": "aborted"},
+                        run_id=run_id,
+                        turn_id=turn_id,
+                    )
+            self._status = RuntimeStatus(
+                context_window=self.store.header.context_window
+            )
+            self._run_id = None
+            self._turn_id = None
+            self._signal = None
+            self._submit_in_progress = False
+            self._release_operation()
+            raise
 
     async def _run(
         self, prompt: str, run_id: str, turn_id: str, signal: asyncio.Event
@@ -247,6 +299,8 @@ class AgentRuntime:
             outcome = await self._runner.run_turn(
                 prompt, run_id=run_id, turn_id=turn_id, signal=signal
             )
+            if run_id in self._forced_aborts:
+                return
             self._last_outcome = outcome
             self._status = RuntimeStatus(
                 status="aborted"
@@ -266,11 +320,12 @@ class AgentRuntime:
                 turn_id=turn_id,
             )
             turn_closed = True
+            self._terminal_events.add(run_id)
             await self._emit(
                 "run_finished", outcome=outcome.model_dump(), steps=outcome.steps
             )
         except asyncio.CancelledError:
-            if not turn_closed:
+            if not turn_closed and run_id not in self._forced_aborts:
                 with contextlib.suppress(Exception):
                     self.store.append_new(
                         "turn_end",
@@ -280,6 +335,8 @@ class AgentRuntime:
                     )
             raise
         except Exception as exc:  # noqa: BLE001 - runtime errors become events
+            if run_id in self._forced_aborts:
+                return
             self._status = RuntimeStatus(status="error", run_id=run_id, turn_id=turn_id)
             with contextlib.suppress(Exception):
                 self.store.append_new(
@@ -293,18 +350,21 @@ class AgentRuntime:
                 "run_error", code="runtime_error", message=str(exc), recoverable=False
             )
         finally:
-            self._task = None
-            self._signal = None
-            self._run_id = None
-            self._turn_id = None
-            if self._status.status != "error":
-                self._status = self._status.model_copy(
-                    update={
-                        "status": "idle"
-                        if self._status.status != "aborted"
-                        else "aborted"
-                    }
-                )
+            if self._task is asyncio.current_task():
+                self._task = None
+                self._submit_in_progress = False
+                self._signal = None
+                self._run_id = None
+                self._turn_id = None
+                if self._status.status != "error":
+                    self._status = self._status.model_copy(
+                        update={
+                            "status": "idle"
+                            if self._status.status != "aborted"
+                            else "aborted"
+                        }
+                    )
+            self._forced_aborts.discard(run_id)
 
     async def abort(self, run_id: str) -> None:
         if self._task is None or self._task.done() or run_id != self._run_id:
@@ -313,13 +373,43 @@ class AgentRuntime:
             self._signal.set()
         self._broker.cancel_all()
         task = self._task
+        turn_id = self._turn_id
         try:
             await asyncio.wait_for(asyncio.shield(task), 5.0)
         except TimeoutError:
+            self._forced_aborts.add(run_id)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                 await asyncio.wait_for(asyncio.shield(task), 1.0)
+            if run_id not in self._terminal_events:
+                with contextlib.suppress(Exception):
+                    self.store.append_new(
+                        "turn_end",
+                        {"reason": "aborted"},
+                        run_id=run_id,
+                        turn_id=turn_id,
+                    )
+                self._terminal_events.add(run_id)
+                await self._publish(
+                    RuntimeEvent(
+                        type="run_finished",
+                        run_id=run_id,
+                        turn_id=turn_id,
+                        payload={
+                            "outcome": TurnOutcome(
+                                reason="aborted", steps=0
+                            ).model_dump(),
+                            "steps": 0,
+                        },
+                    )
+                )
             self._status = self._status.model_copy(update={"status": "aborted"})
+            if self._task is task:
+                self._task = None
+                self._submit_in_progress = False
+                self._signal = None
+                self._run_id = None
+                self._turn_id = None
         self._status = self._status.model_copy(update={"status": "aborted"})
 
     async def resolve_approval(
@@ -328,70 +418,111 @@ class AgentRuntime:
         await self._broker.resolve(request_id, decision)
 
     async def set_permission(self, mode: PermissionMode) -> None:
-        previous_mode = self._permission_mode
-        self._permission_mode = mode
-        self._runner.permission_mode = mode
-        self.store.append_new("policy_changed", {"policy": mode})
-        await self._emit("policy_changed", policy=mode, previous_policy=previous_mode)
+        await self._reserve_operation()
+        try:
+            previous_mode = self._permission_mode
+            self._permission_mode = mode
+            self._runner.permission_mode = mode
+            self.store.append_new("policy_changed", {"policy": mode})
+            await self._emit(
+                "policy_changed", policy=mode, previous_policy=previous_mode
+            )
+        finally:
+            self._release_operation()
 
     async def new_session(self) -> str:
-        if self._task is not None and not self._task.done():
-            raise RuntimeError("active run")
-        self.store = SessionStore.create(
-            self.store.path.parent,
-            workspace=self.store.header.workspace,
-            model=self._model,
-            context_window=self.store.header.context_window,
-        )
-        self._permission_mode = "default"
-        self._last_outcome = None
-        self._status = RuntimeStatus()
-        self._runner = self._make_runner()
-        await self._publish(
-            RuntimeEvent(
-                type="session_loaded",
-                payload={
-                    "session_id": self.session_id,
-                    "workspace": self.store.header.workspace,
-                    "model": self.store.header.model,
-                },
+        await self._reserve_operation()
+        try:
+            self.store = SessionStore.create(
+                self.store.path.parent,
+                workspace=self.store.header.workspace,
+                model=self._model,
+                context_window=self.store.header.context_window,
             )
-        )
-        return self.session_id
+            self._permission_mode = "default"
+            self._last_outcome = None
+            self._status = RuntimeStatus(
+                context_window=self.store.header.context_window
+            )
+            self._runner = self._make_runner()
+            await self._publish(
+                RuntimeEvent(
+                    type="session_loaded",
+                    payload={
+                        "session_id": self.session_id,
+                        "workspace": self.store.header.workspace,
+                        "model": self.store.header.model,
+                        "context_window": self.store.header.context_window,
+                        "history": [],
+                    },
+                )
+            )
+            return self.session_id
+        finally:
+            self._release_operation()
 
     async def list_sessions(self) -> list[SessionSummary]:
         return SessionStore.list_sessions(self.store.path.parent)
 
     async def resume(self, session_id: str) -> None:
-        if self._task is not None and not self._task.done():
-            raise RuntimeError("active run")
-        self.store = SessionStore.open(self.store.path.parent, session_id)
-        self._model = self.store.header.model
-        self._permission_mode = "default"
-        self._last_outcome = None
-        self._status = RuntimeStatus()
-        self._runner = self._make_runner()
-        await self._publish(
-            RuntimeEvent(
-                type="session_loaded",
-                payload={
-                    "session_id": session_id,
-                    "workspace": self.store.header.workspace,
-                    "model": self.store.header.model,
-                },
+        await self._reserve_operation()
+        try:
+            self.store = SessionStore.open(self.store.path.parent, session_id)
+            self.store.mark_open_final_turn_interrupted()
+            self._model = self.store.header.model
+            self._permission_mode = "default"
+            self._last_outcome = None
+            self._status = RuntimeStatus(
+                context_window=self.store.header.context_window
             )
-        )
-        if self.store.load_notice:
+            self._runner = self._make_runner()
+            history = [
+                item.model_dump(mode="json")
+                for item in self.store.project_messages(include_open_turn=False)
+            ]
+            tool_results = {
+                result.tool_call_id: result
+                for record in self.store.records()
+                if record.type == "tool_result"
+                for result in [ToolResult.model_validate(record.payload["result"])]
+            }
+            for item in history:
+                message = item.get("message", {})
+                if message.get("role") != "tool":
+                    continue
+                result = tool_results.get(message.get("tool_call_id"))
+                if result is not None:
+                    item["tool_status"] = _projected_tool_status(result)
             await self._publish(
                 RuntimeEvent(
-                    type="notice",
-                    payload={"level": "warning", "message": self.store.load_notice},
+                    type="session_loaded",
+                    payload={
+                        "session_id": session_id,
+                        "workspace": self.store.header.workspace,
+                        "model": self.store.header.model,
+                        "context_window": self.store.header.context_window,
+                        "history": history,
+                    },
                 )
             )
+            if self.store.load_notice:
+                await self._publish(
+                    RuntimeEvent(
+                        type="notice",
+                        payload={"level": "warning", "message": self.store.load_notice},
+                    )
+                )
+        finally:
+            self._release_operation()
 
     async def compact(self) -> None:
-        if self._task is not None and not self._task.done():
-            raise RuntimeError("active run")
+        await self._reserve_operation()
+        try:
+            await self._compact()
+        finally:
+            self._release_operation()
+
+    async def _compact(self) -> None:
         history = self.store.project_messages(include_open_turn=True)
         policy = self._context_policy_factory()
         view = policy.prepare(

@@ -5,10 +5,11 @@ import pytest
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.runtime.events import RuntimeEvent
-from coding_agent.runtime.models import Message, TurnOutcome
+from coding_agent.runtime.models import Message, ToolCall, TurnOutcome
 from coding_agent.runtime.runtime import AgentRuntime, _ApprovalBroker
 from coding_agent.session.models import ApprovalRequest
 from coding_agent.session.store import SessionStore
+from coding_agent.tools.models import ToolResult
 
 
 class BlockingRunner:
@@ -56,6 +57,215 @@ def make_runtime(tmp_path, runner=None):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_submit_reserves_only_one_active_run(tmp_path):
+    runtime, runner = make_runtime(tmp_path)
+    first_started = asyncio.Event()
+    release_first_started = asyncio.Event()
+
+    async def blocking_sink(event):
+        if event.type == "run_started" and not first_started.is_set():
+            first_started.set()
+            await release_first_started.wait()
+
+    runtime.subscribe(blocking_sink)
+    first = asyncio.create_task(runtime.submit("first"))
+    await first_started.wait()
+    second = asyncio.create_task(runtime.submit("second"))
+    await asyncio.sleep(0)
+    release_first_started.set()
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    successes = [result for result in results if isinstance(result, str)]
+    failures = [result for result in results if isinstance(result, RuntimeError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert str(failures[0]) == "active run"
+
+    runner.gate.set()
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation", ["new_session", "resume", "compact", "set_permission"]
+)
+async def test_session_mutations_reject_submit_while_setup_is_reserved(
+    tmp_path, operation
+):
+    runtime, runner = make_runtime(tmp_path)
+    submit_started = asyncio.Event()
+    release_submit = asyncio.Event()
+
+    async def block_submit_setup(event):
+        if event.type == "run_started":
+            submit_started.set()
+            await release_submit.wait()
+
+    runtime.subscribe(block_submit_setup)
+    submit = asyncio.create_task(runtime.submit("first"))
+    await submit_started.wait()
+
+    with pytest.raises(RuntimeError, match="active run"):
+        if operation == "new_session":
+            await runtime.new_session()
+        elif operation == "resume":
+            await runtime.resume(runtime.session_id)
+        elif operation == "compact":
+            await runtime.compact()
+        else:
+            await runtime.set_permission("full")
+
+    release_submit.set()
+    await submit
+    runner.gate.set()
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_submit_closes_its_turn_and_clears_active_state(tmp_path):
+    runtime, runner = make_runtime(tmp_path)
+    submit_started = asyncio.Event()
+
+    async def block_first_start(event):
+        if event.type == "run_started" and not submit_started.is_set():
+            submit_started.set()
+            await asyncio.Event().wait()
+
+    runtime.subscribe(block_first_start)
+    submit = asyncio.create_task(runtime.submit("first"))
+    await submit_started.wait()
+    submit.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await submit
+
+    assert runtime.status.status == "idle"
+    assert runtime.status.run_id is None
+    assert runtime.status.turn_id is None
+    assert [record.type for record in runtime.store.records()] == [
+        "turn_start",
+        "user_message",
+        "turn_end",
+    ]
+    assert runtime.store.records()[-1].payload["reason"] == "aborted"
+    assert not runtime.store.has_interrupted_turn()
+
+    await runtime.submit("second")
+    runner.gate.set()
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_forced_abort_persists_one_terminal_event_and_blocks_late_completion(
+    tmp_path, monkeypatch
+):
+    release = asyncio.Event()
+
+    class CancellationResistantRunner:
+        event_sink = None
+        permission_mode = "default"
+
+        async def run_turn(self, prompt, *, run_id, turn_id, signal):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            return TurnOutcome(reason="completed", final_text="late", steps=1)
+
+    async def timeout_immediately(awaitable, timeout):
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(
+        "coding_agent.runtime.runtime.asyncio.wait_for", timeout_immediately
+    )
+    runtime, _ = make_runtime(tmp_path, CancellationResistantRunner())
+    events = []
+
+    async def record(event):
+        events.append(event)
+
+    runtime.subscribe(record)
+    run_id = await runtime.submit("first")
+    await asyncio.sleep(0)
+
+    await runtime.abort(run_id)
+
+    assert [event.type for event in events if event.type == "run_finished"] == [
+        "run_finished"
+    ]
+    finished = next(event for event in events if event.type == "run_finished")
+    assert finished.payload["outcome"]["reason"] == "aborted"
+    assert runtime.store.records()[-1].type == "turn_end"
+    assert runtime.store.records()[-1].payload["reason"] == "aborted"
+
+    release.set()
+    await asyncio.sleep(0)
+    assert [record.type for record in runtime.store.records()].count("turn_end") == 1
+    assert [event.type for event in events if event.type == "run_finished"].count(
+        "run_finished"
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_forced_abort_releases_runtime_for_a_follow_up_run(tmp_path, monkeypatch):
+    release = asyncio.Event()
+
+    class CancellationResistantRunner:
+        event_sink = None
+        permission_mode = "default"
+
+        async def run_turn(self, prompt, *, run_id, turn_id, signal):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            return TurnOutcome(reason="completed", final_text="late", steps=1)
+
+    async def timeout_immediately(awaitable, timeout):
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(
+        "coding_agent.runtime.runtime.asyncio.wait_for", timeout_immediately
+    )
+    runtime, _ = make_runtime(tmp_path, CancellationResistantRunner())
+    run_id = await runtime.submit("first")
+    await asyncio.sleep(0)
+
+    await runtime.abort(run_id)
+
+    assert runtime.status.status == "aborted"
+    assert runtime._task is None
+    follow_up = await runtime.submit("follow up")
+    await runtime.abort(follow_up)
+
+
+@pytest.mark.asyncio
+async def test_submit_rejected_while_session_mutation_holds_reservation(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    loaded = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block_session_loaded(event):
+        if event.type == "session_loaded":
+            loaded.set()
+            await release.wait()
+
+    runtime.subscribe(block_session_loaded)
+    mutation = asyncio.create_task(runtime.new_session())
+    await loaded.wait()
+
+    with pytest.raises(RuntimeError, match="active run"):
+        await runtime.submit("racing prompt")
+
+    release.set()
+    await mutation
+
+
+@pytest.mark.asyncio
 async def test_submit_is_nonblocking_and_rejects_busy_run(tmp_path):
     runtime, runner = make_runtime(tmp_path)
     run_id = await runtime.submit("first")
@@ -66,6 +276,68 @@ async def test_submit_is_nonblocking_and_rejects_busy_run(tmp_path):
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert runtime.status.status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_resume_history_marks_failed_and_cancelled_tools(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    session_id = runtime.session_id
+    assistant = Message(
+        role="assistant",
+        tool_calls=[
+            ToolCall(id="failed", name="read_file"),
+            ToolCall(id="cancelled", name="run_command"),
+        ],
+    )
+    runtime.store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
+    runtime.store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="inspect")},
+        turn_id="t1",
+    )
+    runtime.store.append_new(
+        "assistant_message", {"message": assistant, "complete": True}, turn_id="t1"
+    )
+    runtime.store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="failed",
+                tool_name="read_file",
+                ok=False,
+                content="",
+                error="denied",
+            )
+        },
+        turn_id="t1",
+    )
+    runtime.store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="cancelled",
+                tool_name="run_command",
+                ok=False,
+                content="",
+                error="cancelled",
+            )
+        },
+        turn_id="t1",
+    )
+    runtime.store.append_new("turn_end", {"reason": "completed"}, turn_id="t1")
+
+    events = []
+    runtime.subscribe(events.append)
+    await runtime.new_session()
+    await runtime.resume(session_id)
+
+    loaded = [item for item in events if item.type == "session_loaded"][-1]
+    statuses = {
+        item["message"]["tool_call_id"]: item["tool_status"]
+        for item in loaded.payload["history"]
+        if item["message"]["role"] == "tool"
+    }
+    assert statuses == {"failed": "error", "cancelled": "cancelled"}
 
 
 @pytest.mark.asyncio
@@ -110,7 +382,137 @@ async def test_subscribers_receive_events_and_unsubscribe(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_session_loaded_publishes_restored_workspace_and_model(tmp_path):
+async def test_resume_session_loaded_projects_completed_history_and_excludes_open_turn(
+    tmp_path,
+):
+    runtime, _ = make_runtime(tmp_path)
+    session_id = runtime.session_id
+    completed_turn = "completed"
+    interrupted_turn = "interrupted"
+    tool_call = ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"})
+    runtime.store.append_new(
+        "turn_start", {"turn_id": completed_turn}, turn_id=completed_turn
+    )
+    runtime.store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="inspect a.py")},
+        turn_id=completed_turn,
+    )
+    runtime.store.append_new(
+        "assistant_message",
+        {
+            "message": Message(
+                role="assistant", content="I will read it.", tool_calls=[tool_call]
+            ),
+            "complete": True,
+        },
+        turn_id=completed_turn,
+    )
+    runtime.store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="call-1", tool_name="read_file", ok=True, content="text"
+            )
+        },
+        turn_id=completed_turn,
+    )
+    runtime.store.append_new(
+        "assistant_message",
+        {"message": Message(role="assistant", content="It is text."), "complete": True},
+        turn_id=completed_turn,
+    )
+    runtime.store.append_new(
+        "turn_end", {"reason": "completed"}, turn_id=completed_turn
+    )
+    runtime.store.append_new(
+        "turn_start", {"turn_id": interrupted_turn}, turn_id=interrupted_turn
+    )
+    runtime.store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="do not replay")},
+        turn_id=interrupted_turn,
+    )
+
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    await runtime.new_session()
+    await runtime.resume(session_id)
+
+    interrupted_records = [
+        record
+        for record in runtime.store.records()
+        if record.type == "turn_end" and record.payload.get("reason") == "interrupted"
+    ]
+    assert len(interrupted_records) == 1
+
+    loaded = [event for event in events if event.type == "session_loaded"][-1]
+    assert loaded.payload["session_id"] == session_id
+    assert loaded.payload["workspace"] == str(tmp_path)
+    assert loaded.payload["model"] == "fake"
+    assert loaded.payload["context_window"] == 1000
+    assert all(isinstance(item["record_id"], str) for item in loaded.payload["history"])
+    assert loaded.payload["history"] == [
+        {
+            "record_id": loaded.payload["history"][0]["record_id"],
+            "turn_id": completed_turn,
+            "seq": 1,
+            "message": {
+                "role": "user",
+                "content": "inspect a.py",
+                "tool_calls": [],
+                "tool_call_id": None,
+                "name": None,
+            },
+        },
+        {
+            "record_id": loaded.payload["history"][1]["record_id"],
+            "turn_id": completed_turn,
+            "seq": 2,
+            "message": {
+                "role": "assistant",
+                "content": "I will read it.",
+                "tool_calls": [
+                    {"id": "call-1", "name": "read_file", "arguments": {"path": "a.py"}}
+                ],
+                "tool_call_id": None,
+                "name": None,
+            },
+        },
+        {
+            "record_id": loaded.payload["history"][2]["record_id"],
+            "turn_id": completed_turn,
+            "seq": 3,
+            "message": {
+                "role": "tool",
+                "content": "text",
+                "tool_calls": [],
+                "tool_call_id": "call-1",
+                "name": "read_file",
+            },
+            "tool_status": "success",
+        },
+        {
+            "record_id": loaded.payload["history"][3]["record_id"],
+            "turn_id": completed_turn,
+            "seq": 4,
+            "message": {
+                "role": "assistant",
+                "content": "It is text.",
+                "tool_calls": [],
+                "tool_call_id": None,
+                "name": None,
+            },
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_session_loaded_has_empty_history_and_context_baseline(tmp_path):
     runtime, _ = make_runtime(tmp_path)
     events = []
 
@@ -118,14 +520,11 @@ async def test_session_loaded_publishes_restored_workspace_and_model(tmp_path):
         events.append(event)
 
     runtime.subscribe(sink)
-    session_id = runtime.session_id
     await runtime.new_session()
-    await runtime.resume(session_id)
 
-    loaded = [event for event in events if event.type == "session_loaded"][-1]
-    assert loaded.payload["session_id"] == session_id
-    assert loaded.payload["workspace"] == str(tmp_path)
-    assert loaded.payload["model"] == "fake"
+    loaded = next(event for event in events if event.type == "session_loaded")
+    assert loaded.payload["history"] == []
+    assert loaded.payload["context_window"] == 1000
 
 
 @pytest.mark.asyncio

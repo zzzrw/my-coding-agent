@@ -8,9 +8,10 @@ from coding_agent.session.models import ApprovalRequest
 class TranscriptItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    kind: Literal["user", "assistant", "tool", "system"]
+    kind: Literal["user", "assistant", "tool", "system", "local_command"]
     item_id: str
     text: str = ""
+    level: Literal["notice", "error"] | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_status: Literal["running", "success", "error", "cancelled"] | None = None

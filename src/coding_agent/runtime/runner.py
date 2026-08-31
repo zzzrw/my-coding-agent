@@ -84,6 +84,7 @@ class AgentRunner:
             text_parts: list[str] = []
             calls: OrderedDict[str, dict[str, str]] = OrderedDict()
             finish_reason: str | None = None
+            tool_calls_completed = False
             provider_error: str | None = None
             try:
                 async for event in self.provider.stream(
@@ -116,7 +117,10 @@ class AgentRunner:
                         if event.arguments_delta:
                             current["arguments"] += event.arguments_delta
                     elif event.type in {"tool_call_end", "response_end"}:
-                        finish_reason = event.finish_reason
+                        if event.finish_reason:
+                            finish_reason = event.finish_reason
+                        if event.finish_reason == "tool_calls":
+                            tool_calls_completed = True
                         usage = event.usage or usage
                     elif event.type == "error":
                         provider_error = event.error or "provider error"
@@ -136,21 +140,6 @@ class AgentRunner:
                 return TurnOutcome(reason="provider_error", steps=step, usage=usage)
 
             final_text = "".join(text_parts)
-            if finish_reason == "length" and calls:
-                await self._emit(
-                    "notice",
-                    run_id,
-                    turn_id,
-                    level="error",
-                    message="truncated tool call was not executed",
-                )
-                return TurnOutcome(
-                    reason="completed",
-                    final_text=final_text,
-                    steps=step,
-                    usage=usage,
-                )
-
             parsed_calls: list[ToolCall] = []
             invalid_results: list[ToolResult] = []
             for call_id, raw in calls.items():
@@ -158,7 +147,7 @@ class AgentRunner:
                     arguments = json.loads(raw["arguments"] or "{}")
                     if not isinstance(arguments, dict):
                         raise TypeError("tool arguments must be an object")
-                except (json.JSONDecodeError, ValueError) as exc:
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     arguments = {}
                     invalid_results.append(
                         ToolResult(
@@ -171,6 +160,21 @@ class AgentRunner:
                     )
                 parsed_calls.append(
                     ToolCall(id=call_id, name=raw["name"], arguments=arguments)
+                )
+
+            if calls and (not tool_calls_completed or finish_reason == "length"):
+                await self._emit(
+                    "notice",
+                    run_id,
+                    turn_id,
+                    level="error",
+                    message="truncated tool call was not executed",
+                )
+                return TurnOutcome(
+                    reason="completed",
+                    final_text=final_text,
+                    steps=step,
+                    usage=usage,
                 )
 
             assistant = Message(

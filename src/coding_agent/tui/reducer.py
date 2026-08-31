@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import TypeAdapter
 
 from coding_agent.runtime.events import RuntimeEvent
-from coding_agent.session.models import ApprovalRequest
+from coding_agent.session.models import ApprovalRequest, SessionMessage
 from coding_agent.tui.state import TranscriptItem, TuiState
 
 
@@ -32,28 +34,32 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
         )
 
     elif event.type == "run_finished":
-        outcome = payload.get("outcome", {})
-        reason = outcome if isinstance(outcome, str) else None
-        if isinstance(outcome, dict):
-            reason = outcome.get("reason")
-        status = _terminal_status(reason)
-        updates.update(
-            status=status,
-            active_run_id=None,
-            active_turn_id=None,
-            active_tool_call_id=None,
-            pending_approval=None,
-        )
+        if _event_matches_active_run(state, event):
+            outcome = payload.get("outcome", {})
+            reason = outcome if isinstance(outcome, str) else None
+            if isinstance(outcome, dict):
+                reason = outcome.get("reason")
+            status = _terminal_status(reason)
+            updates.update(
+                status=status,
+                active_run_id=None,
+                active_turn_id=None,
+                active_tool_call_id=None,
+                pending_approval=None,
+            )
 
     elif event.type == "run_error":
-        updates.update(
-            status="error",
-            active_run_id=None,
-            active_turn_id=None,
-            active_tool_call_id=None,
-            pending_approval=None,
-        )
-        _append_system(transcript, payload.get("message", "runtime error"))
+        if _event_matches_active_run(state, event):
+            updates.update(
+                status="error",
+                active_run_id=None,
+                active_turn_id=None,
+                active_tool_call_id=None,
+                pending_approval=None,
+            )
+            _append_system(
+                transcript, payload.get("message", "runtime error"), level="error"
+            )
 
     elif event.type == "user_message":
         message_id = _non_empty_str(payload.get("message_id"))
@@ -146,21 +152,23 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 updates["active_tool_call_id"] = None
 
     elif event.type == "approval_requested":
-        request = _approval(payload.get("request"))
-        if request is not None:
-            updates.update(pending_approval=request, status="waiting_approval")
+        if _event_matches_active_run(state, event):
+            request = _approval(payload.get("request"))
+            if request is not None:
+                updates.update(pending_approval=request, status="waiting_approval")
 
     elif event.type == "approval_resolved":
-        request_id = _non_empty_str(payload.get("request_id"))
-        if (
-            state.pending_approval is not None
-            and request_id == state.pending_approval.request_id
-        ):
-            updates["pending_approval"] = None
-            if payload.get("status") == "cancelled":
-                updates["status"] = "aborted"
-            elif payload.get("status") in {"approved", "denied"}:
-                updates["status"] = "running"
+        if _event_matches_active_run(state, event):
+            request_id = _non_empty_str(payload.get("request_id"))
+            if (
+                state.pending_approval is not None
+                and request_id == state.pending_approval.request_id
+            ):
+                updates["pending_approval"] = None
+                if payload.get("status") == "cancelled":
+                    updates["status"] = "aborted"
+                elif payload.get("status") in {"approved", "denied"}:
+                    updates["status"] = "running"
 
     elif event.type == "status_changed":
         status = payload.get("status")
@@ -179,26 +187,109 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             session_id=_optional_str(payload.get("session_id"), state.session_id),
             workspace=_optional_str(payload.get("workspace"), state.workspace),
             model=_optional_str(payload.get("model"), state.model),
+            context_used=0,
+            context_window=_int(payload.get("context_window"), 0),
+            context_estimated=False,
             policy="default",
             status="idle",
             active_run_id=None,
             active_turn_id=None,
             active_tool_call_id=None,
             pending_approval=None,
-            transcript=[],
+            transcript=_projected_transcript(payload.get("history"))
+            + [row for row in state.transcript if row.kind == "local_command"],
         )
 
     elif event.type == "policy_changed":
         updates["policy"] = _policy(payload.get("policy"), state.policy)
 
     elif event.type == "notice":
-        _append_system(transcript, payload.get("message", ""))
+        command = _non_empty_str(payload.get("command"))
+        if command:
+            transcript.append(
+                TranscriptItem(
+                    kind="local_command",
+                    item_id=f"command-{len(transcript)}",
+                    text=command,
+                )
+            )
+        message = payload.get("message")
+        if message is not None:
+            level = payload.get("level", "notice")
+            _append_system(
+                transcript,
+                message,
+                level=level if level in {"notice", "error"} else "notice",
+            )
 
     if event.type != "session_loaded":
         updates["transcript"] = transcript
     if "pending_approval" not in updates:
         updates["pending_approval"] = pending_approval
     return state.model_copy(update=updates)
+
+
+def _event_matches_active_run(state: TuiState, event: RuntimeEvent) -> bool:
+    """Accept unscoped lifecycle events and events for the active run only."""
+    return (
+        event.run_id is None
+        or state.active_run_id is None
+        or event.run_id == state.active_run_id
+    )
+
+
+def _projected_transcript(value: object) -> list[TranscriptItem]:
+    if not isinstance(value, list):
+        return []
+    transcript: list[TranscriptItem] = []
+    for item in value:
+        try:
+            if isinstance(item, dict):
+                raw_tool_status = item.get("tool_status")
+                if raw_tool_status is None:
+                    tool_status = "success"
+                else:
+                    try:
+                        tool_status = TypeAdapter(
+                            Literal["running", "success", "error", "cancelled"]
+                        ).validate_python(raw_tool_status, strict=True)
+                    except (TypeError, ValueError):
+                        continue
+                validated_item = {
+                    key: value for key, value in item.items() if key != "tool_status"
+                }
+            else:
+                tool_status = "success"
+                validated_item = item
+            session_message = SessionMessage.model_validate(validated_item)
+        except (TypeError, ValueError):
+            continue
+        message = session_message.message
+        if message.role not in {"user", "assistant", "tool"}:
+            continue
+        if message.role == "tool":
+            call_id = _non_empty_str(message.tool_call_id)
+            if call_id is None:
+                continue
+            transcript.append(
+                TranscriptItem(
+                    kind="tool",
+                    item_id=session_message.record_id,
+                    tool_call_id=call_id,
+                    tool_name=_optional_str(message.name, None),
+                    text=_text(message.content),
+                    tool_status=tool_status,
+                )
+            )
+        else:
+            transcript.append(
+                TranscriptItem(
+                    kind=message.role,
+                    item_id=session_message.record_id,
+                    text=_text(message.content),
+                )
+            )
+    return transcript
 
 
 def _append_or_update(
@@ -220,12 +311,15 @@ def _append_or_update(
         )
 
 
-def _append_system(transcript: list[TranscriptItem], message: object) -> None:
+def _append_system(
+    transcript: list[TranscriptItem], message: object, *, level: str = "notice"
+) -> None:
     transcript.append(
         TranscriptItem(
             kind="system",
             item_id=f"system-{len(transcript)}",
             text=_text(message),
+            level=level,
         )
     )
 

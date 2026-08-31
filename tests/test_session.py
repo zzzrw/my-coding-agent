@@ -70,6 +70,35 @@ def test_projection_does_not_duplicate_audit_tool_call(tmp_path):
     ]
 
 
+def test_projection_retains_nonempty_tool_failure_error(tmp_path):
+    store = SessionStore.create(
+        tmp_path, workspace=str(tmp_path), model="fake", context_window=1000
+    )
+    assistant = Message(
+        role="assistant", tool_calls=[ToolCall(id="c1", name="read_file")]
+    )
+    store.append_new(
+        "assistant_message", {"message": assistant, "complete": True}, turn_id="t1"
+    )
+    store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="c1",
+                tool_name="read_file",
+                ok=False,
+                content="",
+                error="permission denied",
+            )
+        },
+        turn_id="t1",
+    )
+
+    projected = store.project_messages()
+
+    assert projected[-1].message.content == "permission denied"
+
+
 def test_projection_rejects_unmatched_tool_result(tmp_path):
     store = SessionStore.create(
         tmp_path, workspace=str(tmp_path), model="fake", context_window=1000
@@ -122,7 +151,18 @@ def test_reopened_header_reflects_latest_append_timestamp(tmp_path):
     assert reopened.header.updated_at == reopened.records()[-1].timestamp
 
 
-def test_open_turn_is_interrupted_without_replay(tmp_path):
+def test_mark_open_final_turn_interrupted_and_completed_work_clears_status(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
+    store.mark_open_final_turn_interrupted()
+
+    assert store.has_interrupted_turn()
+    assert store.project_messages() == []
+
+    store.append_new("turn_start", {"turn_id": "t2"}, turn_id="t2")
+    store.append_new("turn_end", {"reason": "completed"}, turn_id="t2")
+    assert not store.has_interrupted_turn()
+
     store = SessionStore.create(
         tmp_path, workspace=str(tmp_path), model="fake", context_window=1000
     )
@@ -130,6 +170,29 @@ def test_open_turn_is_interrupted_without_replay(tmp_path):
     reopened = SessionStore.open(tmp_path, store.session_id)
     assert reopened.has_interrupted_turn()
     assert reopened.project_messages() == []
+
+
+def test_interrupted_turn_is_excluded_when_open_turns_are_requested(tmp_path):
+    store = SessionStore.create(tmp_path, workspace="w", model="m", context_window=1)
+    store.append_new("turn_start", {"turn_id": "abandoned"}, turn_id="abandoned")
+    store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="abandoned prompt")},
+        turn_id="abandoned",
+    )
+    store.mark_open_final_turn_interrupted()
+    store.append_new("turn_start", {"turn_id": "fresh"}, turn_id="fresh")
+    store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="fresh prompt")},
+        turn_id="fresh",
+    )
+
+    projected = store.project_messages(include_open_turn=True)
+
+    assert [(item.message.role, item.message.content) for item in projected] == [
+        ("user", "fresh prompt")
+    ]
 
 
 def test_malformed_final_line_is_usable_and_reports_notice(tmp_path):

@@ -169,33 +169,62 @@ class SessionStore:
     def records(self) -> list[SessionRecord]:
         return list(self._records)
 
+    def mark_open_final_turn_interrupted(self) -> None:
+        open_turns: list[str] = []
+        for record in self._records:
+            tid = record.turn_id or record.payload.get("turn_id")
+            if record.type == "turn_start" and tid:
+                if tid not in open_turns:
+                    open_turns.append(tid)
+            elif record.type == "turn_end" and tid and tid in open_turns:
+                open_turns.remove(tid)
+        if open_turns:
+            turn_id = open_turns[-1]
+            self.append_new(
+                "turn_end",
+                {"reason": "interrupted"},
+                run_id=None,
+                turn_id=turn_id,
+            )
+
     def has_interrupted_turn(self) -> bool:
         open_turns: set[str] = set()
+        interrupted = False
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
             if record.type == "turn_start" and tid:
                 open_turns.add(tid)
             elif record.type == "turn_end" and tid:
                 open_turns.discard(tid)
-        return bool(open_turns)
+                reason = record.payload.get("reason")
+                if reason == "interrupted":
+                    interrupted = True
+                elif reason == "completed":
+                    interrupted = False
+        return bool(open_turns) or interrupted
 
     def project_messages(
         self, *, include_open_turn: bool = False
     ) -> list[SessionMessage]:
         open_turns: set[str] = set()
+        interrupted_turns: set[str] = set()
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
             if record.type == "turn_start" and tid:
                 open_turns.add(tid)
             elif record.type == "turn_end" and tid:
                 open_turns.discard(tid)
+                if record.payload.get("reason") == "interrupted":
+                    interrupted_turns.add(tid)
         projected: list[SessionMessage] = []
         pending_calls: dict[str, tuple[int, str | None]] = {}
         completed_calls: set[str] = set()
         active_assistant: tuple[int, str | None] | None = None
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
-            if not include_open_turn and tid in open_turns:
+            if tid in interrupted_turns or (
+                not include_open_turn and tid in open_turns
+            ):
                 continue
             if (
                 record.type == "assistant_message"
@@ -250,7 +279,7 @@ class SessionStore:
                         seq=record.seq,
                         message=Message(
                             role="tool",
-                            content=result.content,
+                            content=(result.content or result.error or ""),
                             tool_call_id=result.tool_call_id,
                             name=result.tool_name,
                         ),

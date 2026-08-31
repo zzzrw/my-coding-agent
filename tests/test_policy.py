@@ -91,6 +91,26 @@ def test_root_removal_option_variants_are_always_denied(command):
 @pytest.mark.parametrize(
     "command",
     [
+        "git --exec-path /tmp push -f origin main",
+        "git --exec-path /tmp push --delete origin topic",
+    ],
+)
+def test_destructive_push_after_separate_exec_path_is_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+
+    assert classify_command(command).catastrophic is True
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "fdisk /dev/sda",
         "/sbin/fdisk /dev/sda",
         "mkfs /dev/sda",
@@ -119,6 +139,185 @@ def test_more_catastrophic_command_variants_are_always_denied(command):
 )
 def test_executable_paths_variables_and_short_force_are_catastrophic(command):
     assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --git-dir=.git push -f origin main",
+        "git -c x=y push -f origin main",
+        "git push origin +main:main",
+    ],
+)
+def test_force_push_variants_are_catastrophic_and_denied_in_every_mode(command):
+    policy = DefaultApprovalPolicy()
+
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+    assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --git-dir=.git push origin main",
+        "git -c x=y push origin main",
+        "git push origin main",
+    ],
+)
+def test_ordinary_push_variants_are_not_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+
+    assert classify_command(command).catastrophic is False
+    assert (
+        policy.decide(
+            SHELL, {"command": command}, workspace=Path("."), mode="full"
+        ).kind
+        == "allow"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -p push -f origin main",
+        "git --paginate push -f origin main",
+        "git -P push -f origin main",
+        "git --no-pager push -f origin main",
+    ],
+)
+def test_force_push_after_git_pagination_flags_is_catastrophic(command):
+    assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --literal-pathspecs push -f origin main",
+        "git --glob-pathspecs push -f origin main",
+        "git --noglob-pathspecs push -f origin main",
+        "git --icase-pathspecs push -f origin main",
+    ],
+)
+def test_force_push_after_git_pathspec_flags_is_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+
+    assert classify_command(command).catastrophic is True
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git --literal-pathspecs push origin main",
+        "git --glob-pathspecs push origin main",
+        "git --noglob-pathspecs push origin main",
+        "git --icase-pathspecs push origin main",
+    ],
+)
+def test_ordinary_push_after_git_pathspec_flags_is_not_catastrophic(command):
+    assert classify_command(command).catastrophic is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push --delete origin feature",
+        "git push -d origin feature",
+        "git push origin :feature",
+        "git push origin :refs/heads/feature",
+        "git push --mirror origin",
+        "git push origin --mirror",
+        "git push --prune origin refs/heads/*:refs/heads/*",
+        "git push origin --prune refs/heads/*:refs/heads/*",
+    ],
+)
+def test_destructive_push_forms_are_catastrophic_and_denied_in_every_mode(command):
+    policy = DefaultApprovalPolicy()
+
+    assert classify_command(command).catastrophic is True
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo $(git push -f origin main)",
+        "echo `git push -f origin main`",
+    ],
+)
+def test_force_push_in_command_substitution_is_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+
+    assert classify_command(command).catastrophic is True
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+
+
+def test_quoted_force_push_text_is_not_catastrophic():
+    assert classify_command('echo "git push -f origin main"').catastrophic is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -p push origin main",
+        "git --paginate push origin main",
+        "git -P push origin main",
+        "git --no-pager push origin main",
+    ],
+)
+def test_ordinary_push_after_git_pagination_flags_is_not_catastrophic(command):
+    assert classify_command(command).catastrophic is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -vf origin main",
+        "git push -fq origin main",
+    ],
+)
+def test_bundled_force_push_options_are_catastrophic(command):
+    assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push -o +ci origin main",
+        "git push -o f origin main",
+        "git push -of origin main",
+        "git push -o+ci origin main",
+        "git push -vo +ci origin main",
+        "git push --push-option=+ci origin main",
+        "git push --push-option=f origin main",
+    ],
+)
+def test_push_option_values_are_not_forced_refspecs(command):
+    assert classify_command(command).catastrophic is False
 
 
 @pytest.mark.parametrize(

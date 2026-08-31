@@ -274,6 +274,51 @@ def test_run_error_adds_system_row_and_sets_error_status():
     assert row.text == "unavailable"
 
 
+def test_resumed_tool_rows_preserve_validated_error_and_cancelled_statuses():
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event(
+            "session_loaded",
+            {
+                "session_id": "s1",
+                "workspace": "/tmp/project",
+                "model": "fake",
+                "context_window": 1000,
+                "history": [
+                    {
+                        "record_id": "tool-error",
+                        "turn_id": "t1",
+                        "seq": 1,
+                        "tool_status": "error",
+                        "message": {
+                            "role": "tool",
+                            "content": "permission denied",
+                            "tool_call_id": "c1",
+                            "name": "read_file",
+                        },
+                    },
+                    {
+                        "record_id": "tool-cancelled",
+                        "turn_id": "t1",
+                        "seq": 2,
+                        "tool_status": "cancelled",
+                        "message": {
+                            "role": "tool",
+                            "content": "cancelled",
+                            "tool_call_id": "c2",
+                            "name": "run_command",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+
+    rows = {row.tool_call_id: row for row in state.transcript}
+    assert rows["c1"].tool_status == "error"
+    assert rows["c2"].tool_status == "cancelled"
+
+
 def test_context_session_policy_and_notice_updates():
     state = initial_state(workspace="old", model="old-model")
     state = reduce(
@@ -284,11 +329,42 @@ def test_context_session_policy_and_notice_updates():
         ),
     )
     state = reduce(state, event("policy_changed", {"policy": "workspace"}))
+
     state = reduce(
         state,
         event(
             "session_loaded",
-            {"session_id": "s2", "workspace": "/new", "model": "new-model"},
+            {
+                "session_id": "s2",
+                "workspace": "/new",
+                "model": "new-model",
+                "context_window": 200,
+                "history": [
+                    {
+                        "record_id": "u1",
+                        "turn_id": "t1",
+                        "seq": 1,
+                        "message": {"role": "user", "content": "inspect"},
+                    },
+                    {
+                        "record_id": "a1",
+                        "turn_id": "t1",
+                        "seq": 2,
+                        "message": {"role": "assistant", "content": "reading"},
+                    },
+                    {
+                        "record_id": "tool1",
+                        "turn_id": "t1",
+                        "seq": 3,
+                        "message": {
+                            "role": "tool",
+                            "content": "contents",
+                            "tool_call_id": "call-1",
+                            "name": "read_file",
+                        },
+                    },
+                ],
+            },
         ),
     )
     state = reduce(state, event("notice", {"level": "warning", "message": "loaded"}))
@@ -297,11 +373,59 @@ def test_context_session_policy_and_notice_updates():
     assert state.workspace == "/new"
     assert state.model == "new-model"
     assert state.policy == "default"
-    assert state.context_used == 12
-    assert state.context_window == 100
-    assert state.context_estimated is True
+    assert state.context_used == 0
+    assert state.context_window == 200
+    assert state.context_estimated is False
+    assert [
+        (
+            row.kind,
+            row.item_id,
+            row.text,
+            row.tool_name,
+            row.tool_call_id,
+            row.tool_status,
+        )
+        for row in state.transcript[:-1]
+    ] == [
+        ("user", "u1", "inspect", None, None, None),
+        ("assistant", "a1", "reading", None, None, None),
+        ("tool", "tool1", "contents", "read_file", "call-1", "success"),
+    ]
     assert state.transcript[-1].kind == "system"
     assert state.transcript[-1].text == "loaded"
+
+
+def test_new_session_loaded_clears_visible_history_and_stale_context():
+    state = reduce(
+        initial_state(workspace="old", model="old-model"),
+        event("user_message", {"message_id": "old-user", "text": "old"}),
+    )
+    state = reduce(
+        state,
+        event(
+            "context_updated",
+            {"used_tokens": 12, "context_window": 100, "estimated": True},
+        ),
+    )
+
+    state = reduce(
+        state,
+        event(
+            "session_loaded",
+            {
+                "session_id": "fresh",
+                "workspace": "/fresh",
+                "model": "fresh-model",
+                "context_window": 300,
+                "history": [],
+            },
+        ),
+    )
+
+    assert state.transcript == []
+    assert state.context_used == 0
+    assert state.context_window == 300
+    assert state.context_estimated is False
 
 
 def test_reduce_does_not_mutate_input_state_or_nested_rows():

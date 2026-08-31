@@ -57,13 +57,153 @@ def _rm_is_catastrophic(tokens: list[str]) -> bool:
     return False
 
 
+_GIT_GLOBAL_OPTIONS_WITH_ARGUMENTS = {
+    "-C",
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+}
+_GIT_GLOBAL_FLAGS = {
+    "-p",
+    "-P",
+    "--bare",
+    "--no-advice",
+    "--no-lazy-fetch",
+    "--no-pager",
+    "--no-replace-objects",
+    "--no-optional-locks",
+    "--paginate",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+}
+
+
+def _git_push_subcommand_index(tokens: list[str], git_index: int) -> int | None:
+    index = git_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        option, separator, _value = token.partition("=")
+        if option in _GIT_GLOBAL_OPTIONS_WITH_ARGUMENTS:
+            if not separator:
+                index += 1
+            index += 1
+            continue
+        if token in _GIT_GLOBAL_FLAGS:
+            index += 1
+            continue
+        if token.startswith("-C") and token != "-C":
+            index += 1
+            continue
+        if token.startswith("-c") and token != "-c" and "=" in token[2:]:
+            index += 1
+            continue
+        if token.startswith("--exec-path="):
+            index += 1
+            continue
+        return index
+    return None
+
+
+def _git_push_arguments_are_catastrophic(arguments: list[str]) -> bool:
+    value_options = {
+        "--exec",
+        "--push-option",
+        "--receive-pack",
+        "--recurse-submodules",
+        "--repo",
+    }
+    destructive_options = {"--delete", "-d", "--mirror", "--prune"}
+    skip_next = False
+    for item in arguments:
+        if skip_next:
+            skip_next = False
+            continue
+        option, separator, _value = item.partition("=")
+        if option in value_options:
+            skip_next = not separator
+            continue
+        if option in destructive_options:
+            return True
+        if item == "-o":
+            skip_next = True
+            continue
+        if item.startswith("-") and not item.startswith("--"):
+            short_options = item[1:]
+            option_value = short_options.find("o")
+            flags = (
+                short_options if option_value == -1 else short_options[:option_value]
+            )
+            if "f" in flags or "d" in flags:
+                return True
+            skip_next = option_value == len(short_options) - 1
+            continue
+        if item.startswith("--force"):
+            return True
+        if item.startswith(("+", ":")) and len(item) > 1:
+            return True
+    return False
+
+
+def _command_substitutions_are_catastrophic(command: str) -> bool:
+    """Inspect executable command substitutions while respecting shell quoting."""
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            index += 1
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            index += 1
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            index += 1
+            continue
+        if not single_quoted and command.startswith("$(", index):
+            end = command.find(")", index + 2)
+            if end != -1 and classify_command(command[index + 2 : end]).catastrophic:
+                return True
+            index += 2
+            continue
+        if not single_quoted and character == "`":
+            end = index + 1
+            while end < len(command):
+                if command[end] == "`" and command[end - 1] != "\\":
+                    break
+                end += 1
+            if (
+                end < len(command)
+                and classify_command(command[index + 1 : end]).catastrophic
+            ):
+                return True
+            index = end + 1
+            continue
+        index += 1
+    return False
+
+
 def _git_push_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
-        if Path(token).name != "git" or tokens[index + 1 : index + 2] != ["push"]:
+        if Path(token).name != "git":
             continue
-        return any(
-            item == "-f" or item.startswith("--force") for item in tokens[index + 2 :]
-        )
+        push_index = _git_push_subcommand_index(tokens, index)
+        if push_index is None or tokens[push_index] != "push":
+            continue
+        return _git_push_arguments_are_catastrophic(tokens[push_index + 1 :])
     return False
 
 
@@ -102,6 +242,7 @@ def classify_command(command: str) -> CommandClassification:
         _rm_is_catastrophic(tokens)
         or _git_push_is_catastrophic(tokens)
         or _nested_shell_is_catastrophic(tokens)
+        or _command_substitutions_are_catastrophic(command)
     ):
         return CommandClassification(catastrophic=True, reason="catastrophic command")
     for pattern in _CATASTROPHIC:
