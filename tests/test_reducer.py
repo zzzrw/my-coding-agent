@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.session.models import ApprovalRequest
 from coding_agent.tui.reducer import reduce
@@ -40,6 +43,11 @@ def test_assistant_delta_without_started_row_creates_one_and_empty_ids_do_not_ma
     state = reduce(
         state, event("assistant_delta", {"message_id": "m2", "text": "world"})
     )
+    state = reduce(state, event("assistant_started", {"message_id": " "}))
+    state = reduce(
+        state, event("assistant_delta", {"message_id": "\t", "text": "ignored"})
+    )
+    state = reduce(state, event("assistant_finished", {"message_id": ""}))
 
     assert [
         (row.item_id, row.text) for row in state.transcript if row.kind == "assistant"
@@ -99,6 +107,72 @@ def test_tool_finish_without_start_creates_terminal_row_and_classifies_cancelled
 
     row = next(row for row in state.transcript if row.tool_call_id == "c1")
     assert row.tool_status == "cancelled"
+
+
+def test_tool_finish_requires_boolean_ok_and_terminal_status():
+    state = initial_state(workspace="/tmp/project", model="fake")
+    state = reduce(
+        state,
+        event(
+            "tool_finished",
+            {
+                "tool_call_id": "c1",
+                "tool_name": "read_file",
+                "ok": "false",
+                "content": "failed",
+                "status": "success",
+            },
+        ),
+    )
+    state = reduce(
+        state,
+        event(
+            "tool_finished",
+            {
+                "tool_call_id": "c2",
+                "tool_name": "read_file",
+                "ok": True,
+                "content": "ok",
+                "status": "running",
+            },
+        ),
+    )
+
+    rows = {row.tool_call_id: row for row in state.transcript}
+    assert rows["c1"].tool_status == "error"
+    assert rows["c2"].tool_status == "success"
+
+
+def test_tool_finished_uses_strict_boolean_ok_and_ignores_running_status():
+    state = initial_state(workspace="/tmp/project", model="fake")
+    state = reduce(
+        state,
+        event(
+            "tool_finished",
+            {
+                "tool_call_id": "c1",
+                "tool_name": "read_file",
+                "ok": "false",
+                "content": "not successful",
+                "status": "running",
+            },
+        ),
+    )
+
+    row = next(row for row in state.transcript if row.tool_call_id == "c1")
+    assert row.tool_status == "error"
+
+
+def test_whitespace_assistant_ids_do_not_create_transcript_rows():
+    state = initial_state(workspace="/tmp/project", model="fake")
+    state = reduce(state, event("assistant_started", {"message_id": "   "}))
+    state = reduce(
+        state,
+        event("assistant_delta", {"message_id": "\t", "text": "ignored"}),
+    )
+    state = reduce(state, event("assistant_finished", {"message_id": ""}))
+
+    assert not any(row.kind == "assistant" for row in state.transcript)
 
 
 def test_stale_approval_resolution_does_not_change_state():
@@ -244,3 +318,26 @@ def test_reduce_does_not_mutate_input_state_or_nested_rows():
     assert next_state.transcript is not original.transcript
     assert next_state.transcript[0] is not original.transcript[0]
     assert isinstance(original, TuiState)
+
+
+def test_reduce_isolates_nested_approval_snapshots():
+    request = approval_request()
+    original = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event("approval_requested", {"request": request}),
+    )
+    request.arguments["path"] = "changed-by-event-owner"
+    next_state = reduce(original, event("notice", {"message": "still pending"}))
+
+    assert original.pending_approval is not request
+    assert original.pending_approval.arguments == {"path": "main.py"}
+    assert next_state.pending_approval is not original.pending_approval
+    next_state.pending_approval.arguments["path"] = "changed-in-next-snapshot"
+    assert original.pending_approval.arguments == {"path": "main.py"}
+
+
+def test_tui_state_rejects_coerced_context_fields():
+    with pytest.raises(ValidationError):
+        TuiState(workspace="/tmp/project", model="fake", context_used="12")
+    with pytest.raises(ValidationError):
+        TuiState(workspace="/tmp/project", model="fake", context_estimated="false")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from coding_agent.runtime.events import RuntimeEvent
@@ -11,7 +12,12 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     """Apply one runtime event without mutating the input snapshot."""
     payload = event.payload
     updates: dict[str, Any] = {}
-    transcript = [row.model_copy() for row in state.transcript]
+    transcript = [row.model_copy(deep=True) for row in state.transcript]
+    pending_approval = (
+        state.pending_approval.model_copy(deep=True)
+        if state.pending_approval is not None
+        else None
+    )
 
     if event.type == "run_started":
         updates.update(
@@ -109,7 +115,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     elif event.type == "tool_finished":
         call_id = _non_empty_str(payload.get("tool_call_id"))
         if call_id:
-            ok = bool(payload.get("ok", False))
+            ok = payload.get("ok") is True
             error = _text(payload.get("error"))
             text = _text(payload.get("content"))
             status = _tool_status(payload.get("status"), ok, error, text)
@@ -190,6 +196,8 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
 
     if event.type != "session_loaded":
         updates["transcript"] = transcript
+    if "pending_approval" not in updates:
+        updates["pending_approval"] = pending_approval
     return state.model_copy(update=updates)
 
 
@@ -246,10 +254,10 @@ def _find_tool(transcript: list[TranscriptItem], call_id: str) -> int | None:
 
 def _approval(value: object) -> ApprovalRequest | None:
     if isinstance(value, ApprovalRequest):
-        return value
+        return value.model_copy(deep=True)
     if isinstance(value, dict):
         try:
-            return ApprovalRequest.model_validate(value)
+            return ApprovalRequest.model_validate(value).model_copy(deep=True)
         except (TypeError, ValueError):
             return None
     return None
@@ -264,8 +272,10 @@ def _terminal_status(reason: object) -> str:
 
 
 def _tool_status(value: object, ok: bool, error: str, text: str) -> str:
-    if value in {"running", "success", "error", "cancelled"}:
-        return value
+    if value == "cancelled":
+        return "cancelled"
+    if value == "error":
+        return "error"
     if ok:
         return "success"
     return _tool_error_status(error, text)
@@ -273,7 +283,7 @@ def _tool_status(value: object, ok: bool, error: str, text: str) -> str:
 
 def _tool_error_status(error: str, text: str) -> str:
     combined = f"{error} {text}".lower()
-    return "cancelled" if "cancel" in combined else "error"
+    return "cancelled" if re.search(r"\bcancelled\b", combined) else "error"
 
 
 def _arguments_text(value: object) -> str:
@@ -289,7 +299,7 @@ def _text(value: object) -> str:
 
 
 def _non_empty_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _optional_str(value: object, fallback: str | None) -> str | None:

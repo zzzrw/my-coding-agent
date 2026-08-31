@@ -6,7 +6,7 @@ from coding_agent.session.models import ApprovalRequest
 
 
 class TranscriptItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["user", "assistant", "tool", "system"]
     item_id: str
@@ -17,7 +17,7 @@ class TranscriptItem(BaseModel):
 
 
 class TuiState(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     session_id: str | None = None
     workspace: str
