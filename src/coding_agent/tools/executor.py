@@ -18,6 +18,23 @@ from .registry import ToolContext, ToolRegistry
 
 MAX_TOOL_OUTPUT_CHARS = 20_000
 
+# Markers that disqualify an error from retry. Approval denials, cancellations,
+# invalid arguments, and exact-match failures are deterministic: retrying them
+# cannot succeed and only re-prompts or repeats the same refusal.
+_NON_RETRYABLE_MARKERS = (
+    "approval",
+    "cancelled",
+    "invalid",
+    "exactly once",
+    "old_text",
+)
+
+
+def _retryable(error: str) -> bool:
+    """Return True when ``error`` looks transient and safe to retry."""
+    lowered = error.lower()
+    return not any(marker in lowered for marker in _NON_RETRYABLE_MARKERS)
+
 
 class ApprovalBroker(Protocol):
     async def request(
@@ -60,6 +77,8 @@ class ToolExecutor:
         default_timeout_seconds: float = 120.0,
         memory: DecisionMemory | None = None,
         journal: MutationJournal | None = None,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
     ) -> None:
         self.registry = registry
         self.policy = policy
@@ -68,6 +87,8 @@ class ToolExecutor:
         self.default_timeout_seconds = default_timeout_seconds
         self.memory = memory
         self.journal = journal
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
 
     @staticmethod
     def _mutation_snapshot(
@@ -169,30 +190,49 @@ class ToolExecutor:
                     self.memory.remember(sig, "allow", scope=remember)
                 outside_once = decision.allow_outside_once
 
-            journal_path: Path | None = None
-            original: str | None = None
-            if self.journal is not None and tool.schema.risk_level == "mutate_file":
-                snapshot = self._mutation_snapshot(active_call, workspace)
-                if snapshot is not None:
-                    journal_path, original = snapshot
-
+            # Retry re-enters ONLY the tool-run phase: the approval decision
+            # above is reused, never re-asked. Journal snapshot-before /
+            # push-after semantics apply per attempt, and the same output_sink
+            # is shared across attempts.
             context = ToolContext(
                 workspace=workspace,
                 permission_mode=permission_mode,
                 allow_outside_once=outside_once,
                 on_output=output_sink,
             )
-            result = await self._run_tool(
-                tool.execute(active_call.arguments, context=context, signal=signal),
-                call,
-                signal,
-            )
-            for hook in self.hooks.after_tool:
-                replacement = await hook(active_call, result)
-                if replacement is not None:
-                    result = replacement
-            if result.ok and self.journal is not None and journal_path is not None:
-                self.journal.push(journal_path, original)
+            attempts = 0
+            result = None
+            while True:
+                journal_path: Path | None = None
+                original: str | None = None
+                if self.journal is not None and tool.schema.risk_level == "mutate_file":
+                    snapshot = self._mutation_snapshot(active_call, workspace)
+                    if snapshot is not None:
+                        journal_path, original = snapshot
+
+                result = await self._run_tool(
+                    tool.execute(active_call.arguments, context=context, signal=signal),
+                    call,
+                    signal,
+                )
+                for hook in self.hooks.after_tool:
+                    replacement = await hook(active_call, result)
+                    if replacement is not None:
+                        result = replacement
+                if result.ok:
+                    if self.journal is not None and journal_path is not None:
+                        self.journal.push(journal_path, original)
+                    break
+                if attempts >= self.max_retries or not _retryable(result.error or ""):
+                    break
+                attempts += 1
+                await asyncio.sleep(self.retry_backoff_seconds * attempts)
+
+            assert result is not None
+            if attempts:
+                metadata = dict(result.metadata)
+                metadata["retries"] = attempts
+                result = result.model_copy(update={"metadata": metadata})
             return self._normalize(call, result)
         except Exception as exc:  # noqa: BLE001
             for hook in self.hooks.on_error:
