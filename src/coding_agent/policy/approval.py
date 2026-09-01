@@ -43,13 +43,6 @@ class DefaultApprovalPolicy:
                     reason="shell command requires approval",
                     category="shell",
                 )
-            if classification.outside_or_unknown:
-                return PermissionDecision(
-                    kind="ask",
-                    reason=classification.reason,
-                    category="shell",
-                    allow_outside_once=True,
-                )
             return PermissionDecision(
                 kind="allow", reason="safe workspace command", category="shell"
             )
