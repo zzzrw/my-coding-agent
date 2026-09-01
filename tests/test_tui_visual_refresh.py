@@ -291,7 +291,7 @@ def test_app_css_has_row_spacing_and_full_width_user_card():
     css = CodingAgentApp.CSS
 
     assert "#transcript .row" in css
-    assert ".row.user" in css
+    assert ".row.row-user" in css
     assert "width: 1fr" in css
     assert "row-local_command" in css or ".row.local_command" in css
 
@@ -652,6 +652,15 @@ def test_transcript_assistant_row_renders_styled_markdown():
     assert "`" not in rendered_str
     assert "bold" in rendered_str
     assert "code" in rendered_str
+
+
+@pytest.mark.parametrize("kind", ["user", "local_command"])
+def test_row_css_rules_use_kind_qualified_classes(kind):
+    """Per-kind CSS rules must target the classes TranscriptRow actually sets
+    (``row row-<kind>``), otherwise the rules never apply in a live terminal."""
+    row = TranscriptRow(TranscriptItem(kind=kind, item_id="x", text="hello"), index=0)
+    assert f"row-{kind}" in row.classes
+    assert f".row.row-{kind}" in CodingAgentApp.CSS
 
 
 # ---------------------------------------------------------------------------
