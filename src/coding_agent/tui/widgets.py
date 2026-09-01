@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
@@ -22,6 +23,13 @@ from coding_agent.tui.state import TranscriptItem, TuiState
 class TranscriptRow(Static):
     """A single immutable transcript snapshot row."""
 
+    class ToolRowClicked(Message):
+        """Mouse-clicked a compact tool row to expand or collapse it."""
+
+        def __init__(self, item_id: str) -> None:
+            self.item_id = item_id
+            super().__init__()
+
     def __init__(self, item: TranscriptItem, *, index: int) -> None:
         row_id = _row_id(item, index)
         super().__init__(
@@ -31,6 +39,11 @@ class TranscriptRow(Static):
             classes=f"row row-{item.kind}",
         )
         self.item = item
+
+    def on_click(self, event: events.Click) -> None:
+        if self.item.kind == "tool":
+            event.stop()
+            self.post_message(self.ToolRowClicked(self.item.item_id))
 
 
 class TranscriptView(VerticalScroll):
@@ -356,6 +369,13 @@ def _format_datetime(value: datetime) -> str:
 
 _TOOL_MAX_LINES = 8
 _TOOL_MAX_LINE_CHARS = 200
+_TOOL_PREVIEW_CHARS = 160
+_TOOL_GLYPHS = {
+    "running": "●",
+    "success": "✓",
+    "error": "✕",
+    "cancelled": "⊘",
+}
 
 
 def _truncate_tool_output(text: str) -> str:
@@ -373,6 +393,75 @@ def _truncate_tool_output(text: str) -> str:
     return "\n".join(result)
 
 
+def _tool_display_name(tool_name: str) -> str:
+    """Map a tool name to its compact header label (run_command -> Bash)."""
+    if tool_name == "run_command":
+        return "Bash"
+    return tool_name.capitalize()
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds compactly: 2s, 1m, 1m 30s."""
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    if minutes and secs:
+        return f"{minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m"
+    return f"{secs}s"
+
+
+def _tool_header(item: TranscriptItem) -> str:
+    glyph = _TOOL_GLYPHS.get(item.tool_status or "pending", "●")
+    name = _tool_display_name(item.tool_name or "tool")
+    if item.command:
+        return f"{glyph} {name}({item.command})"
+    return f"{glyph} {name}"
+
+
+def _tool_preview(item: TranscriptItem) -> str | None:
+    """Return the compact first non-empty output line, capped in length."""
+    if item.tool_status == "running":
+        return None
+    lines = [line.strip() for line in item.text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    first = lines[0]
+    if len(first) > _TOOL_PREVIEW_CHARS:
+        first = first[:_TOOL_PREVIEW_CHARS].rstrip() + "…"
+    return f"  ⎿  {first}"
+
+
+def _tool_footer(item: TranscriptItem) -> str | None:
+    parts: list[str] = []
+    if item.elapsed_seconds is not None:
+        parts.append(f"({_format_elapsed(item.elapsed_seconds)})")
+    if item.truncated:
+        parts.append("· truncated")
+    if item.exit_code not in (None, 0):
+        parts.append(f"· exit {item.exit_code}")
+    if not parts:
+        return None
+    return "  ⎿  " + " ".join(parts)
+
+
+def _tool_row_text(item: TranscriptItem) -> str:
+    lines = [_tool_header(item)]
+    if item.expanded:
+        body = _truncate_tool_output(item.text)
+        if body.strip():
+            for line in body.splitlines():
+                lines.append(f"  ⎿  {line}")
+    else:
+        preview = _tool_preview(item)
+        if preview is not None:
+            lines.append(preview)
+    footer = _tool_footer(item)
+    if footer is not None:
+        lines.append(footer)
+    return "\n".join(lines)
+
+
 def _row_text(item: TranscriptItem) -> str:
     if item.kind == "user":
         return f"> {item.text}"
@@ -381,9 +470,7 @@ def _row_text(item: TranscriptItem) -> str:
     if item.kind == "assistant":
         return item.text
     if item.kind == "tool":
-        status = item.tool_status or "pending"
-        name = item.tool_name or "tool"
-        return f"[{status}] {name}: {_truncate_tool_output(item.text)}".rstrip()
+        return _tool_row_text(item)
     return f"[{item.level or 'notice'}] {item.text}"
 
 

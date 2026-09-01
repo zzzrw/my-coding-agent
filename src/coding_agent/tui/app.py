@@ -21,6 +21,7 @@ from coding_agent.tui.widgets import (
     SessionSelector,
     StatusLine,
     SubmitTextArea,
+    TranscriptRow,
     TranscriptView,
 )
 
@@ -679,6 +680,20 @@ class CodingAgentApp(App[None]):
             self.query_one("#statusline", StatusLine).render_state(
                 self.state, getattr(self.runtime, "status", None)
             )
+
+    def on_transcript_row_tool_row_clicked(
+        self, event: TranscriptRow.ToolRowClicked
+    ) -> None:
+        """Expand/collapse a clicked tool row and re-render from state."""
+        event.stop()
+        transcript = [
+            row.model_copy(update={"expanded": not row.expanded})
+            if row.kind == "tool" and row.item_id == event.item_id
+            else row
+            for row in self.state.transcript
+        ]
+        self.state = self.state.model_copy(update={"transcript": transcript})
+        self.call_after_refresh(self._refresh_widgets)
 
     def _show_notice(self, message: str, *, level: str = "notice") -> None:
         self._apply_event(

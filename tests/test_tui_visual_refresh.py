@@ -22,8 +22,8 @@ from coding_agent.tools.models import ToolResult
 from coding_agent.tools.registry import ToolRegistry
 from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.reducer import reduce
-from coding_agent.tui.state import TranscriptItem, initial_state
-from coding_agent.tui.widgets import TranscriptRow
+from coding_agent.tui.state import TranscriptItem, TuiState, initial_state
+from coding_agent.tui.widgets import TranscriptRow, _row_text
 
 
 class ScriptedProvider:
@@ -294,3 +294,234 @@ def test_app_css_has_row_spacing_and_full_width_user_card():
     assert ".row.user" in css
     assert "width: 1fr" in css
     assert "row-local_command" in css or ".row.local_command" in css
+
+
+# ---------------------------------------------------------------------------
+# Task 3: compact tool rows with click-to-expand
+# ---------------------------------------------------------------------------
+
+
+def test_tool_running_header_renders_glyph_and_command():
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="run_command",
+        command="ls",
+        text="",
+        tool_status="running",
+    )
+    rendered = _row_text(item)
+
+    assert "● Bash(ls)" in rendered
+
+
+@pytest.mark.parametrize(
+    ("status", "glyph"),
+    [
+        ("running", "●"),
+        ("success", "✓"),
+        ("error", "✕"),
+        ("cancelled", "⊘"),
+    ],
+)
+def test_tool_header_glyph_reflects_status(status, glyph):
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="run_command",
+        command="ls",
+        text="x",
+        tool_status=status,
+    )
+
+    assert _row_text(item).startswith(f"{glyph} Bash(ls)")
+
+
+def test_tool_preview_shows_first_non_empty_output_line_only():
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="run_command",
+        command="git push",
+        text="\n\nTo github.com:owner/repo.git\nline2",
+        tool_status="success",
+    )
+    rendered = _row_text(item)
+
+    assert "  ⎿  To github.com:owner/repo.git" in rendered
+    assert "line2" not in rendered
+
+
+def test_tool_footer_formats_elapsed_and_status_markers():
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="run_command",
+        command="ls",
+        text="done",
+        tool_status="success",
+        elapsed_seconds=2,
+        truncated=False,
+        exit_code=0,
+    )
+    assert "(2s)" in _row_text(item)
+
+    minute = item.model_copy(update={"elapsed_seconds": 60})
+    assert "(1m)" in _row_text(minute)
+
+    failed = item.model_copy(
+        update={
+            "elapsed_seconds": 90,
+            "truncated": True,
+            "exit_code": 2,
+            "tool_status": "error",
+        }
+    )
+    failed_rendered = _row_text(failed)
+    assert "(1m 30s)" in failed_rendered
+    assert "· truncated" in failed_rendered
+    assert "· exit 2" in failed_rendered
+
+
+def test_tool_expanded_renders_full_truncated_body_instead_of_preview():
+    text = "\n".join(f"line {i}" for i in range(12))
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="run_command",
+        command="ls",
+        text=text,
+        tool_status="success",
+        truncated=True,
+    )
+    compact = _row_text(item)
+    assert "line 11" not in compact
+    assert "(4 more lines)" not in compact
+
+    expanded = _row_text(item.model_copy(update={"expanded": True}))
+    assert "line 0" in expanded
+    assert "(4 more lines)" in expanded
+    assert "line 11" not in expanded
+
+
+class _FakeRuntime:
+    def __init__(self) -> None:
+        self.subscribers = []
+        self.workspace = "/tmp/project"
+        self.model = "fake"
+        self.session_id = "s1"
+        self.permission_mode = "default"
+        self.status = type(
+            "S",
+            (),
+            {
+                "usage": None,
+                "status": "idle",
+                "context_window": 1000,
+                "context_estimated": False,
+                "context_used": 0,
+            },
+        )()
+        self.store = type(
+            "ST",
+            (),
+            {
+                "header": type(
+                    "H",
+                    (),
+                    {
+                        "workspace": "/tmp/project",
+                        "model": "fake",
+                        "context_window": 1000,
+                    },
+                )()
+            },
+        )()
+
+    def subscribe(self, sink):
+        self.subscribers.append(sink)
+        return lambda: None
+
+    async def submit(self, prompt: str) -> str:
+        return "run-1"
+
+    async def abort(self, run_id: str) -> None:
+        pass
+
+    async def resolve_approval(self, request_id: str, decision: str) -> None:
+        pass
+
+    async def set_permission(self, mode: str) -> None:
+        pass
+
+    async def new_session(self) -> str:
+        return "new"
+
+    async def list_sessions(self) -> list:
+        return []
+
+    async def resume(self, session_id: str) -> None:
+        pass
+
+    async def compact(self) -> None:
+        pass
+
+
+def _tool_state(expanded: bool = False) -> TuiState:
+    return initial_state(workspace="/tmp/project", model="fake").model_copy(
+        update={
+            "transcript": [
+                TranscriptItem(
+                    kind="tool",
+                    item_id="c1",
+                    tool_call_id="c1",
+                    tool_name="run_command",
+                    command="ls",
+                    text="hello world",
+                    tool_status="success",
+                    expanded=expanded,
+                )
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_clicking_tool_row_toggles_expanded_flag():
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=_tool_state())
+
+    async with app.run_test() as pilot:
+        row = pilot.app.query_one("TranscriptRow")
+        assert row.item.expanded is False
+
+        await pilot.click(row)
+        await pilot.pause()
+        assert app.state.transcript[0].expanded is True
+
+        await pilot.click(pilot.app.query_one("TranscriptRow"))
+        await pilot.pause()
+        assert app.state.transcript[0].expanded is False
+
+
+@pytest.mark.asyncio
+async def test_clicking_non_tool_row_does_not_toggle():
+    runtime = _FakeRuntime()
+    state = initial_state(workspace="/tmp/project", model="fake").model_copy(
+        update={
+            "transcript": [TranscriptItem(kind="assistant", item_id="a1", text="hello")]
+        }
+    )
+    app = CodingAgentApp(runtime=runtime, initial_state=state)
+
+    async with app.run_test() as pilot:
+        row = pilot.app.query_one("TranscriptRow")
+        await pilot.click(row)
+        await pilot.pause()
+
+        assert app.state.transcript[0].expanded is False

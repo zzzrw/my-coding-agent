@@ -401,7 +401,7 @@ def test_all_transcript_kinds_render_distinct_boundaries() -> None:
     assert rendered["user"].startswith("> ")
     assert rendered["local_command"].startswith("$ ")
     assert rendered["assistant"] == "same text"
-    assert rendered["tool"].startswith("[success] ")
+    assert rendered["tool"].startswith("✓ ")
     assert rendered["notice"].startswith("[notice] ")
     assert rendered["error"].startswith("[error] ")
     assert len(set(rendered.values())) == 6

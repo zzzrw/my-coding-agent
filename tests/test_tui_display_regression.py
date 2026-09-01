@@ -110,21 +110,24 @@ async def test_concurrent_refresh_does_not_raise_duplicate_ids() -> None:
 
 
 def test_tool_row_text_truncates_long_output() -> None:
-    """Tool result output must be capped with a visible more-lines marker."""
+    """Tool output is previewed compactly and capped when expanded."""
     text = "\n".join(f"line {i}" for i in range(30))
-    rendered = _row_text(
-        TranscriptItem(
-            kind="tool",
-            item_id="call-1",
-            tool_call_id="call-1",
-            tool_name="run_command",
-            text=text,
-            tool_status="success",
-        )
+    item = TranscriptItem(
+        kind="tool",
+        item_id="call-1",
+        tool_call_id="call-1",
+        tool_name="run_command",
+        text=text,
+        tool_status="success",
     )
-    assert "line 0" in rendered
-    assert "line 29" not in rendered
-    assert "(22 more lines)" in rendered
+    compact = _row_text(item)
+    assert "line 0" in compact
+    assert "line 29" not in compact
+    assert "(22 more lines)" not in compact
+
+    expanded = _row_text(item.model_copy(update={"expanded": True}))
+    assert "line 29" not in expanded
+    assert "(22 more lines)" in expanded
 
 
 def test_tool_row_text_truncates_long_lines() -> None:
@@ -145,7 +148,7 @@ def test_tool_row_text_truncates_long_lines() -> None:
 
 
 def test_short_tool_output_is_unchanged() -> None:
-    """Small tool results keep their full text."""
+    """Small tool results keep their full text as a preview line."""
     rendered = _row_text(
         TranscriptItem(
             kind="tool",
@@ -156,7 +159,8 @@ def test_short_tool_output_is_unchanged() -> None:
             tool_status="success",
         )
     )
-    assert "[success] run_command: ok" in rendered
+    assert "✓ Bash" in rendered
+    assert "  ⎿  ok" in rendered
 
 
 def test_reapply_user_message_does_not_duplicate_row() -> None:
