@@ -17,6 +17,7 @@ RuntimeEventType = Literal[
     "assistant_finished",
     "assistant_message",
     "tool_started",
+    "tool_output_delta",
     "tool_finished",
     "approval_requested",
     "approval_resolved",

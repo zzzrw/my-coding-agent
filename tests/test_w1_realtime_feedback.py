@@ -1,7 +1,8 @@
 """W1 real-time feedback tests: streamed tool output + statusline spinner/elapsed.
 
-Task 1 coverage lives here: the tool output sink threaded through
-``ToolContext`` -> ``_ShellTool`` -> ``ToolExecutor``.
+Task 1 coverage: the tool output sink threaded through ``ToolContext`` ->
+``_ShellTool`` -> ``ToolExecutor``. Task 2 coverage: ``AgentRunner`` emits
+``tool_output_delta`` events for streamed tool output.
 """
 
 import asyncio
@@ -73,3 +74,101 @@ async def test_executor_forwards_output_sink(tmp_path):
     )
     assert result.ok
     assert "".join(collected) == "hi"
+
+
+class _ScriptedProvider:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    async def stream(self, messages, tools, *, model, signal):
+        for event in self.responses.pop(0):
+            yield event
+
+
+async def test_runner_emits_tool_output_delta(tmp_path):
+    from coding_agent.context.truncate import TruncatePolicy
+    from coding_agent.runtime.events import RuntimeEvent
+    from coding_agent.runtime.models import LLMEvent, Message
+    from coding_agent.runtime.runner import AgentRunner
+    from coding_agent.session.store import SessionStore
+
+    events: list[RuntimeEvent] = []
+
+    async def sink(event: RuntimeEvent) -> None:
+        events.append(event)
+
+    # Two provider turns, matching test_runner.py: a tool-call stream followed by
+    # a text stream. A later `response_end(finish_reason="stop")` in the same
+    # stream would overwrite `tool_calls` and mark the call truncated.
+    tool_turn = [
+        LLMEvent(
+            type="tool_call_start", tool_call_id="call-1", tool_name="run_command"
+        ),
+        LLMEvent(
+            type="tool_call_delta",
+            tool_call_id="call-1",
+            arguments_delta='{"command": "seq 1 2000"}',
+        ),
+        LLMEvent(type="response_end", finish_reason="tool_calls"),
+    ]
+    final_turn = [
+        LLMEvent(type="text_delta", text="done"),
+        LLMEvent(type="response_end", finish_reason="stop"),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(make_run_command_tool())
+    executor = ToolExecutor(registry, DefaultApprovalPolicy(), _NoopBroker())
+    store = SessionStore.create(
+        tmp_path / "sessions",
+        workspace=str(tmp_path),
+        model="test",
+        context_window=100_000,
+    )
+    store.append_new("turn_start", {"turn_id": "t1"}, run_id="r1", turn_id="t1")
+    store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="run it")},
+        run_id="r1",
+        turn_id="t1",
+    )
+    runner = AgentRunner(
+        provider=_ScriptedProvider([tool_turn, final_turn]),
+        registry=registry,
+        executor=executor,
+        context_policy=TruncatePolicy(),
+        store=store,
+        event_sink=sink,
+        system_prompt=Message(role="system", content="sys"),
+        model="test",
+        context_window=100_000,
+        permission_mode="full",
+    )
+
+    outcome = await runner.run_turn(
+        "run it", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+
+    assert outcome.reason == "completed"
+    deltas = [e for e in events if e.type == "tool_output_delta"]
+    assert deltas, "expected tool_output_delta events"
+    assert all(e.payload["tool_call_id"] == "call-1" for e in deltas)
+    finished = next(
+        e
+        for e in events
+        if e.type == "tool_finished" and e.payload["tool_call_id"] == "call-1"
+    )
+    assert "".join(e.payload["text"] for e in deltas) == finished.payload["content"]
+    # Deltas arrive between tool_started and tool_finished, in stream order.
+    indices = {
+        e.type: i
+        for i, e in enumerate(events)
+        if e.type in {"tool_started", "tool_finished"}
+    }
+    assert indices["tool_started"] < min(
+        i for i, e in enumerate(events) if e.type == "tool_output_delta"
+    )
+    assert (
+        max(i for i, e in enumerate(events) if e.type == "tool_output_delta")
+        < indices["tool_finished"]
+    )

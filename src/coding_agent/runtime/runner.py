@@ -233,6 +233,9 @@ class AgentRunner:
                         workspace=Path(self.store.header.workspace),
                         permission_mode=self.permission_mode,
                         signal=signal,
+                        output_sink=await self._tool_output_sink(
+                            run_id, turn_id, call.id
+                        ),
                     )
                 try:
                     self.store.append_new(
@@ -260,6 +263,18 @@ class AgentRunner:
             steps=self.max_steps,
             usage=usage,
         )
+
+    async def _tool_output_sink(self, run_id: str, turn_id: str, call_id: str):
+        async def sink(text: str) -> None:
+            await self._emit(
+                "tool_output_delta",
+                run_id,
+                turn_id,
+                tool_call_id=call_id,
+                text=text,
+            )
+
+        return sink
 
     async def _emit(self, event_type, run_id, turn_id, **payload) -> None:
         await self.event_sink(
