@@ -14,16 +14,22 @@ class CommandSuggestion:
 
 
 _COMMANDS = (
-    CommandSuggestion("clear", "Clear the visible transcript"),
-    CommandSuggestion("compact", "Compact the current context"),
-    CommandSuggestion("context", "Show context usage"),
-    CommandSuggestion("exit", "Exit the application"),
-    CommandSuggestion("help", "List available commands"),
-    CommandSuggestion("new", "Start a new session"),
-    CommandSuggestion("permission", "Show or change permission mode"),
-    CommandSuggestion("quit", "Exit the application"),
-    CommandSuggestion("resume", "Resume a session by id or prefix"),
-    CommandSuggestion("session", "Choose a session to resume"),
+    CommandSuggestion("clear", "Clear the visible transcript", usage="/clear"),
+    CommandSuggestion("compact", "Compact the current context", usage="/compact"),
+    CommandSuggestion("context", "Show context usage", usage="/context"),
+    CommandSuggestion("exit", "Exit the application", usage="/exit"),
+    CommandSuggestion("help", "List available commands", usage="/help"),
+    CommandSuggestion("new", "Start a new session", usage="/new"),
+    CommandSuggestion(
+        "permission",
+        "Show or change permission mode",
+        usage="/permission [default|workspace|full]",
+    ),
+    CommandSuggestion("quit", "Exit the application", usage="/quit"),
+    CommandSuggestion(
+        "resume", "Resume a session by id or prefix", usage="/resume [id|prefix]"
+    ),
+    CommandSuggestion("session", "Choose a session to resume", usage="/session"),
     CommandSuggestion("undo", "Undo the last file write/edit", usage="/undo"),
 )
 SUPPORTED_COMMANDS = frozenset(item.name for item in _COMMANDS)

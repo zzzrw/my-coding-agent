@@ -16,6 +16,7 @@ from coding_agent.tui.state import TuiState, initial_state
 from coding_agent.tui.widgets import (
     ApprovalScreen,
     CommandComposer,
+    HelpScreen,
     PermissionFullScreen,
     PermissionModeScreen,
     SessionSelector,
@@ -160,8 +161,9 @@ class CodingAgentApp(App[None]):
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
     #statusline { height: 1; width: 1fr; }
-    ApprovalScreen, SessionSelector, PermissionModeScreen { align: center middle; }
-    #approval, #permission-full, #permission-mode, #session-selector { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    ApprovalScreen, HelpScreen, SessionSelector, PermissionModeScreen { align: center middle; }
+    #approval, #permission-full, #permission-mode, #session-selector, #help { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #help { max-height: 80%; overflow-y: auto; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
     #approval-diff { border: round $accent; max-height: 12; overflow-y: auto; margin-bottom: 1; }
     #approval-remember-label { margin-bottom: 1; }
@@ -170,7 +172,10 @@ class CodingAgentApp(App[None]):
     #session-options, #permission-mode-options { height: auto; max-height: 18; }
     #session-selector-title, #permission-mode-title { margin-bottom: 1; text-style: bold; }
     """
-    BINDINGS: ClassVar = [Binding("ctrl+c", "interrupt", "Abort", priority=True)]
+    BINDINGS: ClassVar = [
+        Binding("ctrl+c", "interrupt", "Abort", priority=True),
+        Binding("?", "open_help", "Help"),
+    ]
 
     def __init__(
         self,
@@ -295,6 +300,12 @@ class CodingAgentApp(App[None]):
             self._submit_scheduled = False
             self._submit_settled.set()
 
+    def action_open_help(self) -> None:
+        """Push the help overlay (bound to ``?`` and the ``/help`` command)."""
+        if isinstance(self.screen, HelpScreen):
+            return
+        self.push_screen(HelpScreen())
+
     def _dispatch_command(self, name: str, args: list[str]) -> None:
         if name == "exit":
             name = "quit"
@@ -315,10 +326,7 @@ class CodingAgentApp(App[None]):
             if args:
                 self._show_notice("usage: /help")
                 return
-            self._show_notice(
-                "commands: "
-                + ", ".join(f"/{item}" for item in sorted(SUPPORTED_COMMANDS))
-            )
+            self.action_open_help()
         elif name == "context":
             if args:
                 self._show_notice("usage: /context")
@@ -422,6 +430,7 @@ class CodingAgentApp(App[None]):
             self.screen,
             (
                 ApprovalScreen,
+                HelpScreen,
                 PermissionFullScreen,
                 PermissionModeScreen,
                 SessionSelector,

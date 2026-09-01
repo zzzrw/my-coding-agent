@@ -211,6 +211,67 @@ class SessionSelector(ModalScreen[str]):
         self.dismiss(None)
 
 
+class HelpScreen(ModalScreen[None]):
+    """Modal overlay listing commands with usage, keybindings, and permissions.
+
+    ``compose`` yields a single bordered ``Static`` built from
+    ``help_overlay_text()``; ``body`` keeps the renderable accessible so tests
+    can inspect the content without an active App.
+    """
+
+    BINDINGS: ClassVar = [("escape", "close_help", "Close")]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.body = help_overlay_text()
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.body, id="help", markup=False)
+
+    def action_close_help(self) -> None:
+        self.dismiss(None)
+
+
+_HELP_KEYBINDINGS: tuple[tuple[str, str], ...] = (
+    ("Ctrl+C", "abort the current run"),
+    ("↑/↓", "recall composer history"),
+    ("?", "open this help"),
+)
+"""Global keybindings shown in the help overlay."""
+
+_PERMISSION_LEGEND: tuple[tuple[str, str], ...] = (
+    ("default", "approve outside-workspace actions"),
+    ("workspace", "run tools inside the workspace without approval"),
+    ("full", "run all tools without approval"),
+)
+"""Permission-mode legend shown in the help overlay."""
+
+
+def help_overlay_text() -> Text:
+    """Build the styled help overlay body: commands, keybindings, permissions."""
+    body = Text()
+    body.append("Commands", style="bold")
+    body.append("\n")
+    for item in command_suggestions(""):
+        usage = item.usage or f"/{item.name}"
+        body.append(f"  /{item.name:<11}")
+        body.append(usage, style="dim")
+        body.append(f"\n     {item.description}\n")
+    body.append("Keybindings", style="bold")
+    body.append("\n")
+    for key, description in _HELP_KEYBINDINGS:
+        body.append(f"  {key:<10}")
+        body.append(description)
+        body.append("\n")
+    body.append("Permissions", style="bold")
+    body.append("\n")
+    for mode, description in _PERMISSION_LEGEND:
+        body.append(f"  {mode:<10}")
+        body.append(description)
+        body.append("\n")
+    return body
+
+
 class PermissionFullScreen(ModalScreen[bool]):
     """Visible high-risk confirmation before enabling unrestricted permissions."""
 
