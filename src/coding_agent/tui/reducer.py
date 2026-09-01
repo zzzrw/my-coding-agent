@@ -191,6 +191,18 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             ):
                 updates["active_tool_call_id"] = None
 
+    elif event.type == "plan_preview":
+        labels = _plan_labels(payload.get("tool_calls"))
+        if labels:
+            transcript.append(
+                TranscriptItem(
+                    kind="system",
+                    item_id=_next_suffixed_id(transcript, "plan-", kind="system"),
+                    text=f"→ {len(labels)} tool calls: {', '.join(labels)}",
+                    level="notice",
+                )
+            )
+
     elif event.type == "approval_requested":
         if _event_matches_active_run(state, event):
             request = _approval(payload.get("request"))
@@ -479,6 +491,36 @@ def _tool_status(value: object, ok: bool, error: str, text: str) -> str:
 def _tool_error_status(error: str, text: str) -> str:
     combined = f"{error} {text}".lower()
     return "cancelled" if re.search(r"\bcancelled\b", combined) else "error"
+
+
+def _plan_labels(value: object) -> list[str]:
+    """Build compact ``name(arg)`` labels from a plan_preview tool_calls payload."""
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        arg = _plan_arg_label(item.get("arguments"), name)
+        labels.append(f"{name}({arg})" if arg else name)
+    return labels
+
+
+def _plan_arg_label(arguments: object, name: str) -> str | None:
+    """Return the compact single-argument label for a plan row, or None."""
+    if not isinstance(arguments, dict):
+        return None
+    if name == "run_command":
+        command = arguments.get("command")
+        if isinstance(command, str) and command.strip():
+            return command
+    path = arguments.get("path")
+    if isinstance(path, str) and path.strip():
+        return path
+    return None
 
 
 def _command_text(arguments: object, tool_name: str | None) -> str | None:

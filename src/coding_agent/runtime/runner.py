@@ -273,6 +273,17 @@ class AgentRunner:
                     usage=usage,
                 )
 
+            if len(parsed_calls) >= 2:
+                await self._emit(
+                    "plan_preview",
+                    run_id,
+                    turn_id,
+                    tool_calls=[
+                        {"name": call.name, "arguments": call.arguments}
+                        for call in parsed_calls
+                    ],
+                )
+
             invalid_by_id = {result.tool_call_id: result for result in invalid_results}
 
             async def _run_call(

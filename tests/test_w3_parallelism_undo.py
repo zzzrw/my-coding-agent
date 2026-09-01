@@ -239,3 +239,80 @@ async def test_parallel_execution_preserves_per_call_event_order(tmp_path):
             if e.type == "tool_finished" and e.payload["tool_call_id"] == call_id
         )
         assert started < finished
+
+
+def test_reducer_renders_plan_banner():
+    from coding_agent.runtime.events import RuntimeEvent
+    from coding_agent.tui.reducer import reduce
+    from coding_agent.tui.state import initial_state
+
+    state = initial_state(".", "test")
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="plan_preview",
+            run_id="r",
+            turn_id="t",
+            payload={
+                "tool_calls": [
+                    {"name": "write_file", "arguments": {"path": "a"}},
+                    {"name": "run_command", "arguments": {"command": "ls"}},
+                ]
+            },
+        ),
+    )
+    systems = [r for r in state.transcript if r.kind == "system"]
+    assert systems and "write_file(a)" in systems[0].text
+    assert "run_command(ls)" in systems[0].text
+    assert systems[0].text.startswith("→ 2 tool calls:")
+
+
+async def test_runner_emits_plan_preview_for_multi_call_turns(tmp_path):
+    provider = _ScriptedProvider(
+        [
+            _tool_calls_response(
+                [
+                    ("c1", "write_file", {"path": "a.txt", "content": "A"}),
+                    ("c2", "run_command", {"command": "ls"}),
+                ]
+            ),
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(type="response_end", finish_reason="stop"),
+            ],
+        ]
+    )
+    executor = _SleepingExecutor(0.01)
+    runner, events = _make_runner(tmp_path, provider, executor)
+
+    outcome = await runner.run_turn(
+        "do it", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+
+    assert outcome.reason == "completed"
+    previews = [e for e in events if e.type == "plan_preview"]
+    assert len(previews) == 1
+    calls = previews[0].payload["tool_calls"]
+    assert [c["name"] for c in calls] == ["write_file", "run_command"]
+    assert calls[0]["arguments"] == {"path": "a.txt", "content": "A"}
+
+
+async def test_runner_does_not_emit_plan_preview_for_single_call(tmp_path):
+    provider = _ScriptedProvider(
+        [
+            _tool_calls_response([("c1", "read_file", {"path": "a.txt"})]),
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(type="response_end", finish_reason="stop"),
+            ],
+        ]
+    )
+    executor = _SleepingExecutor(0.01)
+    runner, events = _make_runner(tmp_path, provider, executor)
+
+    outcome = await runner.run_turn(
+        "read", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+
+    assert outcome.reason == "completed"
+    assert all(e.type != "plan_preview" for e in events)
