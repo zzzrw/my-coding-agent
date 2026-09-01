@@ -33,3 +33,36 @@ def test_assistant_finished_without_delta_clears_pending() -> None:
     row = state.transcript[-1]
     assert row.pending is False
     assert row.started_at is None
+
+
+from coding_agent.tui.state import TranscriptItem
+from coding_agent.tui.widgets import SPINNER_FRAMES, _row_text
+
+
+def test_pending_row_text_shows_frame_thinking_and_elapsed() -> None:
+    item = TranscriptItem(
+        kind="assistant", item_id="m1", pending=True, started_at=100.0
+    )
+    text = _row_text(item, spinner_frame=2, now=105.0)
+    assert SPINNER_FRAMES[2] in text
+    assert "thinking" in text
+    assert "5s" in text
+
+
+def test_pending_row_text_wraps_frame_index() -> None:
+    item = TranscriptItem(
+        kind="assistant", item_id="m1", pending=True, started_at=100.0
+    )
+    assert SPINNER_FRAMES[0] in _row_text(item, spinner_frame=10, now=101.0)
+
+
+def test_pending_row_with_text_renders_text_not_placeholder() -> None:
+    item = TranscriptItem(
+        kind="assistant", item_id="m1", pending=True, started_at=100.0, text="hello"
+    )
+    assert _row_text(item) == "hello"
+
+
+def test_normal_assistant_row_is_unchanged() -> None:
+    item = TranscriptItem(kind="assistant", item_id="m1", text="hello")
+    assert _row_text(item) == "hello"

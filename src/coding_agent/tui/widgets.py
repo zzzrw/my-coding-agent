@@ -920,12 +920,23 @@ def markdown_to_text(text: str) -> Text:
     return result
 
 
-def _row_text(item: TranscriptItem) -> str:
+def _pending_text(item: TranscriptItem, spinner_frame: int, now: float) -> str:
+    """Placeholder for an assistant row that has not received its first token."""
+    frame = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
+    elapsed = max(0, int(now - (item.started_at or now)))
+    return f"{frame} thinking… ({elapsed}s)"
+
+
+def _row_text(
+    item: TranscriptItem, *, spinner_frame: int = 0, now: float = 0.0
+) -> str:
     if item.kind == "user":
         return f"> {item.text}"
     if item.kind == "local_command":
         return f"$ {item.text}"
     if item.kind == "assistant":
+        if item.pending and not item.text:
+            return _pending_text(item, spinner_frame, now)
         return item.text
     if item.kind == "tool":
         return _tool_row_text(item)
