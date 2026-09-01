@@ -27,6 +27,7 @@ RuntimeEventType = Literal[
     "session_loaded",
     "policy_changed",
     "notice",
+    "heartbeat",
 ]
 
 

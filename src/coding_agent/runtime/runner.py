@@ -1,20 +1,31 @@
 import asyncio
 import json
+import time
 import uuid
-from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections import OrderedDict, deque
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 
 from coding_agent.context.policy import ContextPolicy
 from coding_agent.llm.protocol import LLMProvider
 from coding_agent.runtime.events import RuntimeEvent
-from coding_agent.runtime.models import Message, ToolCall, TurnOutcome, Usage
+from coding_agent.runtime.models import LLMEvent, Message, ToolCall, TurnOutcome, Usage
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.models import ToolResult
 from coding_agent.tools.registry import PermissionMode, ToolRegistry
 
 EventSink = Callable[[RuntimeEvent], Awaitable[None]]
+
+
+class _IdleTimeoutError(Exception):
+    """Raised when the provider stream yields nothing past the idle window."""
+
+
+class _StreamAborted(Exception):
+    """Raised when the signal is set while the provider stream is stalled."""
+
 
 _PARALLEL_SAFE_TOOLS = frozenset({"read_file", "list_files", "grep_files"})
 _MUTATION_TOOLS = frozenset({"write_file", "edit_file"})
@@ -102,6 +113,7 @@ class AgentRunner:
         context_window: int,
         permission_mode: PermissionMode = "default",
         max_steps: int = 20,
+        provider_idle_timeout_seconds: float = 90.0,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -114,6 +126,7 @@ class AgentRunner:
         self.context_window = context_window
         self.permission_mode = permission_mode
         self.max_steps = max_steps
+        self.provider_idle_timeout_seconds = provider_idle_timeout_seconds
 
     async def run_turn(
         self,
@@ -124,8 +137,10 @@ class AgentRunner:
         signal: asyncio.Event,
     ) -> TurnOutcome:
         del prompt
+        turn_started = time.monotonic()
         usage: Usage | None = None
         final_text = ""
+        last_signatures: deque[tuple[str, str]] = deque(maxlen=3)
         for step in range(1, self.max_steps + 1):
             if signal.is_set():
                 return TurnOutcome(reason="aborted", steps=step - 1, usage=usage)
@@ -156,10 +171,17 @@ class AgentRunner:
             finish_reason: str | None = None
             provider_error: str | None = None
             try:
-                async for event in self.provider.stream(
+                stream = self.provider.stream(
                     view.messages,
                     self.registry.schemas(),
                     model=self.model,
+                    signal=signal,
+                )
+                async for event in self._stream_with_idle_watch(
+                    stream,
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    turn_started=turn_started,
                     signal=signal,
                 ):
                     if signal.is_set():
@@ -192,6 +214,17 @@ class AgentRunner:
                     elif event.type == "error":
                         provider_error = event.error or "provider error"
                         break
+            except _IdleTimeoutError:
+                await self._emit(
+                    "notice",
+                    run_id,
+                    turn_id,
+                    level="warning",
+                    message="provider idle",
+                )
+                return TurnOutcome(reason="provider_timeout", steps=step, usage=usage)
+            except _StreamAborted:
+                return TurnOutcome(reason="aborted", steps=step - 1, usage=usage)
             except Exception as exc:  # noqa: BLE001
                 provider_error = str(exc)
 
@@ -349,12 +382,75 @@ class AgentRunner:
                 )
                 if any(isinstance(item, Exception) for item in wave_results):
                     return TurnOutcome(reason="session_error", steps=step, usage=usage)
+                last_signatures.extend(
+                    (call.name, json.dumps(call.arguments, sort_keys=True))
+                    for call in wave
+                )
+                if len(last_signatures) == 3 and len(set(last_signatures)) == 1:
+                    await self._emit(
+                        "notice",
+                        run_id,
+                        turn_id,
+                        level="warning",
+                        message="repeated tool call without progress",
+                    )
+                    return TurnOutcome(reason="progress_loop", steps=step, usage=usage)
         return TurnOutcome(
             reason="max_steps",
             final_text=final_text,
             steps=self.max_steps,
             usage=usage,
         )
+
+    async def _stream_with_idle_watch(
+        self,
+        stream: AsyncIterator[LLMEvent],
+        *,
+        run_id: str,
+        turn_id: str,
+        turn_started: float,
+        signal: asyncio.Event,
+    ) -> AsyncIterator[LLMEvent]:
+        """Iterate ``stream``, racing each ``anext()`` against the idle window.
+
+        Each heartbeat tick (half the idle window, capped at 15s) publishes a
+        ``heartbeat`` event with elapsed seconds since turn start instead of
+        aborting. When no event arrives for a full
+        ``provider_idle_timeout_seconds`` window, raises ``_IdleTimeoutError``.
+        A signal set while stalled raises ``_StreamAborted``.
+        """
+        timeout = self.provider_idle_timeout_seconds
+        tick = min(15.0, timeout / 2) if timeout > 0 else 0.0
+        ait = stream.__aiter__()
+        while True:
+            idle_started = time.monotonic()
+            task = asyncio.create_task(anext(ait))
+            while True:
+                try:
+                    event = await asyncio.wait_for(asyncio.shield(task), tick)
+                except TimeoutError:
+                    if signal.is_set():
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+                        raise _StreamAborted()
+                    await self._emit(
+                        "heartbeat",
+                        run_id,
+                        turn_id,
+                        elapsed_seconds=time.monotonic() - turn_started,
+                    )
+                    if time.monotonic() - idle_started >= timeout:
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+                        raise _IdleTimeoutError()
+                    continue
+                except StopAsyncIteration:
+                    return
+                else:
+                    yield event
+                    break
 
     async def _tool_output_sink(self, run_id: str, turn_id: str, call_id: str):
         async def sink(text: str) -> None:

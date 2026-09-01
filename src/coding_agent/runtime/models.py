@@ -57,7 +57,13 @@ class RuntimeStatus(StrictModel):
 
 class TurnOutcome(StrictModel):
     reason: Literal[
-        "completed", "max_steps", "aborted", "provider_error", "session_error"
+        "completed",
+        "max_steps",
+        "aborted",
+        "provider_error",
+        "session_error",
+        "provider_timeout",
+        "progress_loop",
     ]
     final_text: str = ""
     steps: int = 0
