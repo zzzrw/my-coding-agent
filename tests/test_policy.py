@@ -59,7 +59,7 @@ def test_full_allows_ordinary_tools_but_catastrophic_shell_is_denied():
     assert decision.kind == "deny"
 
 
-def test_unknown_workspace_shell_requires_approval():
+def test_python_dash_c_classifies_as_outside_or_unknown():
     decision = classify_command('python -c \'open("/tmp/out", "w").write("x")\'')
     assert decision.outside_or_unknown is True
 
@@ -353,5 +353,5 @@ def test_nested_shell_option_variants_are_catastrophic(command):
         "",
     ],
 )
-def test_shell_syntax_and_unknown_commands_require_approval(command):
+def test_shell_syntax_and_unknown_commands_classify_as_outside_or_unknown(command):
     assert classify_command(command).outside_or_unknown is True
