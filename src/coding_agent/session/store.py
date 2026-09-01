@@ -15,6 +15,17 @@ from coding_agent.tools.models import ToolResult
 from .models import SessionHeader, SessionMessage, SessionRecord, SessionSummary
 
 
+def _tool_content(content: str, error: str | None) -> str:
+    """Combine a tool result's content and error into a stable model message.
+
+    When both are present the error is preserved in a clearly delimited form so
+    that neither partial output nor the failure reason is lost on projection.
+    """
+    if content and error:
+        return f"{content}\n\n[error] {error}"
+    return content or error or ""
+
+
 class SessionStore:
     def __init__(
         self,
@@ -178,8 +189,7 @@ class SessionStore:
                     open_turns.append(tid)
             elif record.type == "turn_end" and tid and tid in open_turns:
                 open_turns.remove(tid)
-        if open_turns:
-            turn_id = open_turns[-1]
+        for turn_id in open_turns:
             self.append_new(
                 "turn_end",
                 {"reason": "interrupted"},
@@ -206,24 +216,29 @@ class SessionStore:
     def project_messages(
         self, *, include_open_turn: bool = False
     ) -> list[SessionMessage]:
-        open_turns: set[str] = set()
+        open_turns: list[str] = []
         interrupted_turns: set[str] = set()
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
             if record.type == "turn_start" and tid:
-                open_turns.add(tid)
+                if tid not in open_turns:
+                    open_turns.append(tid)
             elif record.type == "turn_end" and tid:
-                open_turns.discard(tid)
-                if record.payload.get("reason") == "interrupted":
+                if tid in open_turns:
+                    open_turns.remove(tid)
+                if record.payload.get("reason") in {"interrupted", "aborted"}:
                     interrupted_turns.add(tid)
+        stale_open_turns = set(open_turns[:-1])
         projected: list[SessionMessage] = []
         pending_calls: dict[str, tuple[int, str | None]] = {}
         completed_calls: set[str] = set()
         active_assistant: tuple[int, str | None] | None = None
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
-            if tid in interrupted_turns or (
-                not include_open_turn and tid in open_turns
+            if (
+                tid in interrupted_turns
+                or tid in stale_open_turns
+                or (not include_open_turn and tid in open_turns)
             ):
                 continue
             if (
@@ -279,7 +294,7 @@ class SessionStore:
                         seq=record.seq,
                         message=Message(
                             role="tool",
-                            content=(result.content or result.error or ""),
+                            content=_tool_content(result.content, result.error),
                             tool_call_id=result.tool_call_id,
                             name=result.tool_name,
                         ),
@@ -291,12 +306,28 @@ class SessionStore:
             call_id for call_id in pending_calls if call_id not in completed_calls
         }
         if dangling:
+            dropped_call_ids: set[str] = set()
+            for item in projected:
+                if item.message.role == "assistant" and any(
+                    call.id in dangling for call in item.message.tool_calls
+                ):
+                    dropped_call_ids.update(
+                        call.id for call in item.message.tool_calls
+                    )
             projected = [
                 item
                 for item in projected
                 if not (
-                    item.message.role == "assistant"
-                    and any(call.id in dangling for call in item.message.tool_calls)
+                    (
+                        item.message.role == "assistant"
+                        and any(
+                            call.id in dangling for call in item.message.tool_calls
+                        )
+                    )
+                    or (
+                        item.message.role == "tool"
+                        and item.message.tool_call_id in dropped_call_ids
+                    )
                 )
             ]
         return projected
