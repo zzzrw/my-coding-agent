@@ -10,7 +10,7 @@ from coding_agent.context.policy import ContextPolicy
 from coding_agent.llm.openai_compatible import redact_secrets
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
 from coding_agent.runtime.events import EventSink, RuntimeEvent
-from coding_agent.runtime.models import Message, RuntimeStatus, TurnOutcome
+from coding_agent.runtime.models import Message, RuntimeStatus, ToolCall, TurnOutcome
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.session.models import ApprovalRequest, SessionSummary
 from coding_agent.session.store import SessionStore
@@ -23,6 +23,17 @@ def _projected_tool_status(result: ToolResult) -> str:
     if result.error and "cancelled" in result.error.lower():
         return "cancelled"
     return "error"
+
+
+def _projected_command(call: ToolCall | None) -> str | None:
+    """Derive the compact tool-row command label from a persisted tool call."""
+    if call is None or not call.arguments:
+        return None
+    if call.name == "run_command":
+        command = call.arguments.get("command")
+        return command if isinstance(command, str) and command.strip() else None
+    pairs = [f"{key}={value}" for key, value in call.arguments.items()]
+    return ", ".join(pairs) if pairs else None
 
 
 class _ApprovalBroker:
@@ -488,13 +499,26 @@ class AgentRuntime:
                 if record.type == "tool_result"
                 for result in [ToolResult.model_validate(record.payload["result"])]
             }
+            tool_calls = {
+                call.id: call
+                for record in self.store.records()
+                if record.type == "tool_call"
+                for call in [ToolCall.model_validate(record.payload["tool_call"])]
+            }
             for item in history:
                 message = item.get("message", {})
                 if message.get("role") != "tool":
                     continue
-                result = tool_results.get(message.get("tool_call_id"))
+                tool_call_id = message.get("tool_call_id")
+                result = tool_results.get(tool_call_id)
+                call = tool_calls.get(tool_call_id)
                 if result is not None:
                     item["tool_status"] = _projected_tool_status(result)
+                    if result.metadata:
+                        item["metadata"] = result.metadata
+                command = _projected_command(call)
+                if command:
+                    item["command"] = command
             await self._publish(
                 RuntimeEvent(
                     type="session_loaded",
