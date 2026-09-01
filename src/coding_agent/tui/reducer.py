@@ -80,6 +80,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                     kind="user",
                     item_id=message_id,
                     text=_text(payload.get("text")),
+                    timestamp=event.timestamp,
                 ),
             )
 

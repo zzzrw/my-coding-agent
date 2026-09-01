@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,6 +14,7 @@ class TranscriptItem(BaseModel):
     text: str = ""
     pending: bool = False
     started_at: float | None = None
+    timestamp: datetime | None = None
     level: Literal["notice", "error"] | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None

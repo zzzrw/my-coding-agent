@@ -1,10 +1,15 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from coding_agent.context.truncate import TruncatePolicy
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.runtime.models import Message, TurnOutcome
 from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
+from coding_agent.tui.reducer import reduce
+from coding_agent.tui.state import initial_state
 
 
 class _NoopRunner:
@@ -86,3 +91,17 @@ async def test_fork_at_latest_message_works_with_open_turn(tmp_path):
         "user_message",
         "turn_end",
     ]
+
+
+def test_user_message_row_carries_timestamp() -> None:
+    stamp = datetime.now(UTC)
+    event = RuntimeEvent(
+        type="user_message",
+        run_id="r",
+        payload={"message_id": "user-t1", "text": "hi"},
+        timestamp=stamp,
+    )
+    state = reduce(initial_state(workspace="/tmp/project", model="fake"), event)
+    row = state.transcript[-1]
+    assert row.kind == "user"
+    assert row.timestamp == stamp
