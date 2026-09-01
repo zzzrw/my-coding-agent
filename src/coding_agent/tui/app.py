@@ -163,6 +163,9 @@ class CodingAgentApp(App[None]):
     ApprovalScreen, SessionSelector, PermissionModeScreen { align: center middle; }
     #approval, #permission-full, #permission-mode, #session-selector { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
+    #approval-diff { border: round $accent; max-height: 12; overflow-y: auto; margin-bottom: 1; }
+    #approval-remember-label { margin-bottom: 1; }
+    #approval-remember, #approval-feedback { margin-bottom: 1; }
     #approve, #deny, #permission-full-approve, #permission-full-cancel { width: 1fr; margin: 0 1; }
     #session-options, #permission-mode-options { height: auto; max-height: 18; }
     #session-selector-title, #permission-mode-title { margin-bottom: 1; text-style: bold; }
@@ -666,7 +669,7 @@ class CodingAgentApp(App[None]):
             ):
                 self._approval_request_id = request.request_id
                 self.push_screen(
-                    ApprovalScreen(request),
+                    ApprovalScreen(request, workspace=self.state.workspace),
                     callback=self._approval_decision,
                 )
         if event.type in {"run_finished", "run_error"} and not self._shutdown_requested:
@@ -707,20 +710,40 @@ class CodingAgentApp(App[None]):
         if isinstance(screen, ApprovalScreen):
             screen.dismiss(None)
 
-    def _approval_decision(self, decision: str | None) -> None:
+    def _approval_decision(self, result) -> None:
+        """Resolve a pending approval with the screen's remember/feedback.
+
+        ``result`` is ``(decision, remember, feedback)`` from ``ApprovalScreen``,
+        or ``None`` when the modal was dismissed (interrupt/shutdown).
+        """
         request_id = self._approval_request_id
         self._approval_request_id = None
-        if request_id is not None and decision in {"approve", "deny"}:
-            self.run_worker(
-                self._resolve_approval(request_id, decision),
-                name="resolve-approval",
-                group="runtime",
-                exit_on_error=False,
-            )
+        if (
+            request_id is None
+            or not isinstance(result, tuple)
+            or len(result) != 3
+            or result[0] not in {"approve", "deny"}
+        ):
+            return
+        decision, remember, feedback = result
+        self.run_worker(
+            self._resolve_approval(request_id, decision, remember, feedback),
+            name="resolve-approval",
+            group="runtime",
+            exit_on_error=False,
+        )
 
-    async def _resolve_approval(self, request_id: str, decision: str) -> None:
+    async def _resolve_approval(
+        self,
+        request_id: str,
+        decision: str,
+        remember: str = "once",
+        feedback: str | None = None,
+    ) -> None:
         try:
-            await self.runtime.resolve_approval(request_id, decision)
+            await self.runtime.resolve_approval(
+                request_id, decision, remember=remember, feedback=feedback
+            )
         except Exception as exc:  # noqa: BLE001 - approval failures become notices
             self._show_notice(str(exc), level="error")
 

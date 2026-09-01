@@ -16,6 +16,7 @@ from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.llm.openai_compatible import OpenAICompatibleProvider
 from coding_agent.llm.protocol import LLMProvider
 from coding_agent.policy.approval import DefaultApprovalPolicy, PermissionMode
+from coding_agent.policy.memory import DecisionMemory
 from coding_agent.runtime.models import Message
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.runtime.runtime import AgentRuntime
@@ -162,7 +163,9 @@ def create_app(
     approval_policy = DefaultApprovalPolicy()
 
     def runner_factory(store, context_policy, broker):
-        executor = ToolExecutor(registry, approval_policy, broker)
+        executor = ToolExecutor(
+            registry, approval_policy, broker, memory=DecisionMemory()
+        )
         return AgentRunner(
             provider=llm_provider,
             registry=registry,

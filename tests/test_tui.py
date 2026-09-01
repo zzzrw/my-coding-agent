@@ -74,7 +74,14 @@ class FakeRuntime:
     async def abort(self, run_id: str) -> None:
         self.aborted.append(run_id)
 
-    async def resolve_approval(self, request_id: str, decision: str) -> None:
+    async def resolve_approval(
+        self,
+        request_id: str,
+        decision: str,
+        remember: str = "once",
+        feedback: str | None = None,
+    ) -> None:
+        del remember, feedback
         self.resolved.append((request_id, decision))
 
     async def set_permission(self, mode: str) -> None:

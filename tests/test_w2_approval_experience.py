@@ -2,15 +2,21 @@ import asyncio
 import json
 import os
 
+from textual.widgets import Input, Select, Static
+
 from coding_agent.app import create_app
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.policy.memory import DecisionMemory, signature
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import LLMEvent, ToolCall
 from coding_agent.runtime.runtime import _ApprovalBroker
 from coding_agent.session.models import ApprovalRequest
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.filesystem import make_write_file_tool
 from coding_agent.tools.registry import ToolRegistry
+from coding_agent.tui.app import CodingAgentApp
+from coding_agent.tui.state import initial_state
+from coding_agent.tui.widgets import ApprovalScreen, render_approval_diff
 
 
 def test_signature_normalizes_arguments():
@@ -297,3 +303,171 @@ async def test_approval_resolved_event_carries_remember_and_feedback():
     resolved = next(event for event in events if event.type == "approval_resolved")
     assert resolved.payload["remember"] == "session"
     assert resolved.payload["feedback"] == "relocate"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: approval diff preview + remember/feedback UI
+# ---------------------------------------------------------------------------
+
+
+def test_render_approval_diff_write(tmp_path):
+    (tmp_path / "a.txt").write_text("old\n")
+    req = ApprovalRequest(
+        request_id="1",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="write_file",
+        risk_level="mutate_file",
+        arguments={"path": "a.txt", "content": "new\n"},
+    )
+    text = render_approval_diff(req, workspace=tmp_path)
+    assert "+new" in str(text)
+    assert "-old" in str(text)
+
+
+def test_render_approval_diff_edit(tmp_path):
+    (tmp_path / "a.txt").write_text("first\nsecond\n")
+    req = ApprovalRequest(
+        request_id="2",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="edit_file",
+        risk_level="mutate_file",
+        arguments={"path": "a.txt", "old_text": "first", "new_text": "changed"},
+    )
+    text = render_approval_diff(req, workspace=tmp_path)
+    assert "-first" in str(text)
+    assert "+changed" in str(text)
+
+
+def test_render_approval_diff_missing_file(tmp_path):
+    # No current file -> the whole proposed content is added lines.
+    req = ApprovalRequest(
+        request_id="3",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="write_file",
+        risk_level="mutate_file",
+        arguments={"path": "new.txt", "content": "hello\n"},
+    )
+    text = render_approval_diff(req, workspace=tmp_path)
+    assert "+hello" in str(text)
+
+
+def test_render_approval_diff_truncates_long(tmp_path):
+    (tmp_path / "a.txt").write_text("".join(f"line {i}\n" for i in range(100)))
+    proposed = "".join(f"changed {i}\n" for i in range(100))
+    req = ApprovalRequest(
+        request_id="4",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="write_file",
+        risk_level="mutate_file",
+        arguments={"path": "a.txt", "content": proposed},
+    )
+    text = render_approval_diff(req, workspace=tmp_path)
+    assert "more lines" in str(text)
+
+
+class _ApprovalRuntime:
+    """Minimal runtime for exercising the ApprovalScreen through the app."""
+
+    def __init__(self):
+        self.resolved = []
+        self.sink = None
+
+    def subscribe(self, sink):
+        self.sink = sink
+        return lambda: None
+
+    async def resolve_approval(
+        self, request_id, decision, remember="once", feedback=None
+    ):
+        self.resolved.append((request_id, decision, remember, feedback))
+
+
+def _diff_approval_request():
+    return ApprovalRequest(
+        request_id="a1",
+        run_id="r1",
+        tool_call_id="c1",
+        tool_name="write_file",
+        risk_level="mutate_file",
+        arguments={"path": "a.txt", "content": "new\n"},
+        reason="write requested",
+    )
+
+
+async def test_approval_screen_has_remember_and_feedback(tmp_path):
+    runtime = _ApprovalRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(str(tmp_path), "fake", context_window=1000),
+    )
+
+    async with app.run_test() as pilot:
+        await runtime.sink(
+            RuntimeEvent(
+                type="approval_requested",
+                run_id="r1",
+                payload={"request": _diff_approval_request()},
+            )
+        )
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        assert isinstance(screen, ApprovalScreen)
+        diff = screen.query_one("#approval-diff", Static)
+        assert "+new" in str(diff.render())
+        remember = screen.query_one("#approval-remember", Select)
+        assert remember.value == "once"
+        assert isinstance(screen.query_one("#approval-feedback", Input), Input)
+
+
+async def test_approval_screen_deny_carries_remember_and_feedback(tmp_path):
+    runtime = _ApprovalRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(str(tmp_path), "fake", context_window=1000),
+    )
+
+    async with app.run_test() as pilot:
+        await runtime.sink(
+            RuntimeEvent(
+                type="approval_requested",
+                run_id="r1",
+                payload={"request": _diff_approval_request()},
+            )
+        )
+        await pilot.pause()
+
+        screen = pilot.app.screen
+        screen.query_one("#approval-remember", Select).value = "session"
+        screen.query_one("#approval-feedback", Input).value = "use relative path"
+        screen.action_deny()
+        await pilot.pause()
+
+    assert runtime.resolved == [("a1", "deny", "session", "use relative path")]
+
+
+async def test_approval_screen_approve_uses_default_remember(tmp_path):
+    runtime = _ApprovalRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(str(tmp_path), "fake", context_window=1000),
+    )
+
+    async with app.run_test() as pilot:
+        await runtime.sink(
+            RuntimeEvent(
+                type="approval_requested",
+                run_id="r1",
+                payload={"request": _diff_approval_request()},
+            )
+        )
+        await pilot.pause()
+
+        pilot.app.screen.action_approve()
+        await pilot.pause()
+
+    assert runtime.resolved == [("a1", "approve", "once", None)]

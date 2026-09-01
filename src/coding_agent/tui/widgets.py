@@ -5,6 +5,8 @@ import subprocess
 import time
 from collections.abc import Iterable
 from datetime import datetime
+from difflib import unified_diff
+from pathlib import Path
 from typing import ClassVar
 
 from rich.text import Text
@@ -13,9 +15,10 @@ from textual.app import ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, OptionList, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Select, Static, TextArea
 from textual.widgets.option_list import Option
 
+from coding_agent.policy.memory import Scope
 from coding_agent.runtime.models import RuntimeStatus, Usage
 from coding_agent.session.models import ApprovalRequest, SessionSummary
 from coding_agent.tui.commands import command_suggestions
@@ -271,8 +274,16 @@ class PermissionModeScreen(ModalScreen[str]):
         self.dismiss(None)
 
 
-class ApprovalScreen(ModalScreen[str]):
-    """Focused approval view; it only returns the user's decision."""
+class ApprovalScreen(ModalScreen[tuple[str, Scope, str | None]]):
+    """Focused approval view with a diff preview, remember scope, and feedback.
+
+    For ``write_file``/``edit_file`` requests it shows a colorized unified diff
+    of the proposed change. A remember selector picks the ``DecisionMemory``
+    scope (``once|turn|session|always``) applied to the decision, and an optional
+    feedback input is passed to the model when the request is denied.
+
+    Dismisses with ``(decision, remember, feedback)``.
+    """
 
     BINDINGS: ClassVar = [
         ("a", "approve", "Approve"),
@@ -280,9 +291,10 @@ class ApprovalScreen(ModalScreen[str]):
         ("escape", "deny", "Deny"),
     ]
 
-    def __init__(self, request: ApprovalRequest) -> None:
+    def __init__(self, request: ApprovalRequest, *, workspace: Path | str) -> None:
         super().__init__()
         self.request = request
+        self.workspace = workspace
 
     def compose(self) -> ComposeResult:
         request = self.request
@@ -295,18 +307,110 @@ class ApprovalScreen(ModalScreen[str]):
         )
         with Container(id="approval"):
             yield Static(details, id="approval-details", markup=False)
+            if request.tool_name in {"write_file", "edit_file"}:
+                yield Static(
+                    render_approval_diff(request, workspace=self.workspace),
+                    id="approval-diff",
+                    markup=False,
+                )
+            yield Static("Remember decision", id="approval-remember-label")
+            yield Select(
+                [
+                    ("once", "once"),
+                    ("turn", "turn"),
+                    ("session", "session"),
+                    ("always", "always"),
+                ],
+                value="once",
+                id="approval-remember",
+            )
+            yield Input(
+                placeholder="Feedback on denial (optional)",
+                id="approval-feedback",
+            )
             yield Button("Approve", id="approve", variant="success")
             yield Button("Deny", id="deny", variant="error")
 
+    def _result(self, decision: str) -> tuple[str, Scope, str | None]:
+        remember = self.query_one("#approval-remember", Select).value or "once"
+        feedback_value = self.query_one("#approval-feedback", Input).value
+        feedback = feedback_value.strip() if isinstance(feedback_value, str) else ""
+        return (decision, remember, feedback or None)
+
     def action_approve(self) -> None:
-        self.dismiss("approve")
+        self.dismiss(self._result("approve"))
 
     def action_deny(self) -> None:
-        self.dismiss("deny")
+        self.dismiss(self._result("deny"))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
-        self.dismiss("approve" if event.button.id == "approve" else "deny")
+        if event.button.id == "approve":
+            self.action_approve()
+        else:
+            self.action_deny()
+
+
+_DIFF_MAX_LINES = 40
+"""Maximum unified-diff lines rendered in the approval panel."""
+
+
+def render_approval_diff(request: ApprovalRequest, *, workspace: Path | str) -> Text:
+    """Render a colorized unified diff of a proposed file mutation.
+
+    ``write_file`` replaces the file with ``arguments["content"]``; ``edit_file``
+    applies the ``old_text`` → ``new_text`` substitution to the current content.
+    Added lines are green, removed lines red, and headers/hunk line numbers are
+    dim. Diffs longer than ``_DIFF_MAX_LINES`` lines are truncated with a
+    ``… (N more lines)`` note. Missing files diff as all-added content.
+    """
+    if request.tool_name not in {"write_file", "edit_file"}:
+        return Text("")
+    raw_path = request.arguments.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        return Text("")
+    user_path = Path(raw_path).expanduser()
+    path = user_path if user_path.is_absolute() else Path(workspace) / user_path
+    try:
+        current = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        current = ""
+    if request.tool_name == "write_file":
+        proposed = str(request.arguments.get("content", ""))
+    else:
+        old_text = str(request.arguments.get("old_text", ""))
+        new_text = str(request.arguments.get("new_text", ""))
+        proposed = current.replace(old_text, new_text, 1) if old_text else current
+    diff_lines = list(
+        unified_diff(
+            current.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=str(path),
+            tofile=str(path),
+        )
+    )
+    text = Text()
+    shown = diff_lines[:_DIFF_MAX_LINES]
+    for line in shown:
+        _append_diff_line(text, line)
+    if len(diff_lines) > _DIFF_MAX_LINES:
+        text.append(
+            f"… ({len(diff_lines) - _DIFF_MAX_LINES} more lines)",
+            style="dim",
+        )
+    return text
+
+
+def _append_diff_line(text: Text, line: str) -> None:
+    """Append one unified-diff line, styling added/removed/header content."""
+    if line.startswith("+"):
+        text.append(line, style="green")
+    elif line.startswith("-"):
+        text.append(line, style="red")
+    elif line.startswith("@@"):
+        text.append(line, style="dim")
+    else:
+        text.append(line)
 
 
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
