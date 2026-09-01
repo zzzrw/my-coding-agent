@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, ClassVar
 
 from textual import events
@@ -30,6 +30,26 @@ from coding_agent.tui.widgets import (
 _COMPACTING_CONFLICTS = frozenset(
     {"new", "session", "resume", "compact", "permission", "clear"}
 )
+
+_PROMPT_HISTORY_MAX = 50
+"""Maximum number of submitted prompts recalled in the composer."""
+
+
+class _PromptHistory(list[str]):
+    """A prompt list capped at ``_PROMPT_HISTORY_MAX``, dropping oldest first."""
+
+    def __init__(self, maxlen: int = _PROMPT_HISTORY_MAX) -> None:
+        super().__init__()
+        self.maxlen = maxlen
+
+    def append(self, item: str) -> None:
+        super().append(item)
+        if len(self) > self.maxlen:
+            del self[: len(self) - self.maxlen]
+
+    def extend(self, items: Iterable[str]) -> None:
+        for item in items:
+            self.append(item)
 
 
 class _RuntimeBridge:
@@ -204,6 +224,9 @@ class CodingAgentApp(App[None]):
         self._refresh_in_progress = False
         self._refresh_pending = False
         self._spinner_interval: Any | None = None
+        self.prompt_history: list[str] = _PromptHistory()
+        self._history_index: int | None = None
+        self._history_draft = ""
 
     def compose(self) -> ComposeResult:
         yield TranscriptView(id="transcript")
@@ -294,11 +317,51 @@ class CodingAgentApp(App[None]):
     async def _submit_prompt(self, prompt: str) -> None:
         try:
             self._submitted_run_id = await self.runtime.submit(prompt)
+            self._record_history(prompt)
         except Exception as exc:  # noqa: BLE001 - runtime errors become rows
             self._show_notice(str(exc), level="error")
         finally:
             self._submit_scheduled = False
             self._submit_settled.set()
+
+    def _record_history(self, prompt: str) -> None:
+        """Append a submitted prompt to the history ring and reset navigation."""
+        self.prompt_history.append(prompt)
+        self._history_index = None
+        self._history_draft = ""
+
+    def on_submit_text_area_composer_history_requested(
+        self, event: SubmitTextArea.ComposerHistoryRequested
+    ) -> None:
+        event.stop()
+        self._history_recall(event.offset)
+
+    def _history_recall(self, offset: int) -> None:
+        """Recall composer prompt history: ``-1`` older, ``+1`` newer.
+
+        The first ``-1`` stashes the current draft text; navigating ``+1`` past
+        the newest entry restores it and resets ``_history_index``. No-op when
+        history is empty, so the arrows are inert until something was submitted.
+        """
+        if not self.prompt_history:
+            return
+        composer = self.query_one("#composer-input", SubmitTextArea)
+        if offset < 0:
+            if self._history_index is None:
+                self._history_draft = composer.text
+                self._history_index = len(self.prompt_history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            composer.text = self.prompt_history[self._history_index]
+            return
+        if self._history_index is None:
+            return
+        if self._history_index >= len(self.prompt_history) - 1:
+            self._history_index = None
+            composer.text = self._history_draft
+        else:
+            self._history_index += 1
+            composer.text = self.prompt_history[self._history_index]
 
     def action_open_help(self) -> None:
         """Push the help overlay (bound to ``?`` and the ``/help`` command)."""

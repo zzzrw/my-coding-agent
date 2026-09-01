@@ -19,6 +19,7 @@ from coding_agent.tui.widgets import SubmitTextArea
 class FakeRuntime:
     def __init__(self) -> None:
         self.subscribers: list[Callable[[RuntimeEvent], Awaitable[None]]] = []
+        self.submitted: list[str] = []
         self.status = type("RuntimeStatus", (), {"usage": None})()
 
     def subscribe(
@@ -31,6 +32,10 @@ class FakeRuntime:
                 self.subscribers.remove(sink)
 
         return unsubscribe
+
+    async def submit(self, prompt: str) -> str:
+        self.submitted.append(prompt)
+        return "run-1"
 
 
 def make_state(**updates: object) -> TuiState:
@@ -100,3 +105,135 @@ async def test_question_mark_binding_opens_help():
         app.action_open_help()
         await pilot.pause()
         assert isinstance(app.screen, HelpScreen)
+
+
+def test_history_cap_and_recall():
+    app = CodingAgentApp(runtime=FakeRuntime(), initial_state=make_state())
+    for i in range(60):
+        app.prompt_history.append(f"p{i}")
+    assert len(app.prompt_history) == 50
+    assert app.prompt_history[0] == "p10"
+    assert app.prompt_history[-1] == "p59"
+
+
+@pytest.mark.asyncio
+async def test_submit_appends_to_prompt_history():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = "hello agent"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.submitted == ["hello agent"]
+    assert app.prompt_history == ["hello agent"]
+    assert app._history_index is None
+
+
+@pytest.mark.asyncio
+async def test_commands_are_not_recorded_in_history():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = "/context"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.submitted == []
+    assert app.prompt_history == []
+
+
+@pytest.mark.asyncio
+async def test_up_recalls_previous_prompt_and_stashes_draft():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as _:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        app.prompt_history.append("first prompt")
+        app.prompt_history.append("second prompt")
+        composer.text = "in-progress draft"
+
+        app._history_recall(-1)
+
+        assert composer.text == "second prompt"
+        assert app._history_index == 1
+        assert app._history_draft == "in-progress draft"
+
+
+@pytest.mark.asyncio
+async def test_down_recalls_newer_and_restores_draft():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as _:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        app.prompt_history.append("first prompt")
+        app.prompt_history.append("second prompt")
+        composer.text = "draft"
+
+        app._history_recall(-1)
+        assert composer.text == "second prompt"
+        app._history_recall(-1)
+        assert composer.text == "first prompt"
+
+        app._history_recall(+1)
+        assert composer.text == "second prompt"
+        app._history_recall(+1)
+        assert composer.text == "draft"
+        assert app._history_index is None
+
+        # staying past the newest entry is a no-op
+        app._history_recall(+1)
+        assert composer.text == "draft"
+
+
+@pytest.mark.asyncio
+async def test_history_recall_noop_when_history_empty():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as _:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = "draft"
+
+        app._history_recall(-1)
+        assert composer.text == "draft"
+        assert app._history_index is None
+        app._history_recall(+1)
+        assert composer.text == "draft"
+        assert app._history_index is None
+
+
+@pytest.mark.asyncio
+async def test_up_down_keys_recall_composer_history():
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        app.prompt_history.append("first prompt")
+        app.prompt_history.append("second prompt")
+        composer.text = "draft"
+
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "second prompt"
+        assert app._history_draft == "draft"
+
+        await pilot.press("up")
+        await pilot.pause()
+        assert composer.text == "first prompt"
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert composer.text == "second prompt"
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert composer.text == "draft"
+        assert app._history_index is None

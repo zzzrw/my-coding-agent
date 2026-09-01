@@ -111,6 +111,13 @@ class SubmitTextArea(TextArea):
             self.text = text
             super().__init__()
 
+    class ComposerHistoryRequested(Message):
+        """Up/Down pressed while the composer is focused (palette hidden)."""
+
+        def __init__(self, offset: int) -> None:
+            self.offset = offset
+            super().__init__()
+
     def on_mount(self) -> None:
         self._update_command_palette()
 
@@ -128,6 +135,13 @@ class SubmitTextArea(TextArea):
                 delta = -1 if event.key == "up" else 1
                 current = palette.highlighted if palette.highlighted is not None else 0
                 palette.highlighted = (current + delta) % palette.option_count
+            return
+        if event.key in {"up", "down"} and not self._palette_visible:
+            event.stop()
+            event.prevent_default()
+            self.post_message(
+                self.ComposerHistoryRequested(-1 if event.key == "up" else 1)
+            )
             return
         if event.key == "enter":
             event.stop()
