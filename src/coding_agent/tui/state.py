@@ -42,6 +42,8 @@ class TuiState(BaseModel):
     pending_approval: ApprovalRequest | None = None
     input_text: str = ""
     compacting: bool = False
+    run_started_at: float | None = None
+    spinner_frame: int = 0
 
 
 def initial_state(

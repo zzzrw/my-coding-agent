@@ -2,16 +2,21 @@
 
 Task 1 coverage: the tool output sink threaded through ``ToolContext`` ->
 ``_ShellTool`` -> ``ToolExecutor``. Task 2 coverage: ``AgentRunner`` emits
-``tool_output_delta`` events for streamed tool output.
+``tool_output_delta`` events for streamed tool output. Task 3 coverage: the
+TUI reducer accumulates deltas into the tool row and tracks run timing via
+``TuiState.run_started_at`` / ``TuiState.spinner_frame``.
 """
 
 import asyncio
 
 from coding_agent.policy.approval import DefaultApprovalPolicy
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import ToolCall
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.registry import ToolContext, ToolRegistry
 from coding_agent.tools.shell import make_run_command_tool
+from coding_agent.tui.reducer import reduce
+from coding_agent.tui.state import initial_state
 
 
 class _NoopBroker:
@@ -172,3 +177,108 @@ async def test_runner_emits_tool_output_delta(tmp_path):
         max(i for i, e in enumerate(events) if e.type == "tool_output_delta")
         < indices["tool_finished"]
     )
+
+
+def _delta_event(run_id: str, turn_id: str, call_id: str, text: str) -> RuntimeEvent:
+    return RuntimeEvent(
+        type="tool_output_delta",
+        run_id=run_id,
+        turn_id=turn_id,
+        payload={"tool_call_id": call_id, "text": text},
+    )
+
+
+def test_reducer_accumulates_tool_output_delta():
+    state = initial_state(".", "test")
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="tool_started",
+            run_id="r",
+            turn_id="t",
+            payload={
+                "tool_call_id": "c1",
+                "tool_name": "run_command",
+                "arguments": {"command": "seq 10"},
+            },
+        ),
+    )
+    state = reduce(state, _delta_event("r", "t", "c1", "1\n2\n"))
+    state = reduce(state, _delta_event("r", "t", "c1", "3\n"))
+
+    tool_rows = [row for row in state.transcript if row.kind == "tool"]
+    assert tool_rows and tool_rows[0].text == "1\n2\n3\n"
+    # Deltas never flip the tool row out of running, and the command label
+    # derived from tool_started is preserved.
+    assert tool_rows[0].tool_status == "running"
+    assert tool_rows[0].command == "seq 10"
+
+
+def test_reducer_creates_tool_row_from_delta_when_started_missing():
+    state = reduce(initial_state(".", "test"), _delta_event("r", "t", "c1", "out"))
+
+    rows = [row for row in state.transcript if row.kind == "tool"]
+    assert len(rows) == 1
+    assert rows[0].tool_call_id == "c1"
+    assert rows[0].tool_status == "running"
+    assert rows[0].text == "out"
+
+
+def test_run_started_sets_timing_and_finished_clears():
+    state = initial_state(".", "test")
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="run_started",
+            run_id="r",
+            turn_id="t",
+            payload={"session_id": "s", "model": "test", "policy": "default"},
+        ),
+    )
+    assert state.run_started_at is not None
+    assert state.spinner_frame == 0
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="run_finished",
+            run_id="r",
+            turn_id="t",
+            payload={"outcome": {"reason": "completed"}, "steps": 1},
+        ),
+    )
+    assert state.run_started_at is None
+
+
+def test_run_error_clears_timing_and_session_loaded_resets():
+    state = reduce(
+        initial_state(".", "test"),
+        RuntimeEvent(
+            type="run_started",
+            run_id="r",
+            turn_id="t",
+            payload={"session_id": "s", "model": "test", "policy": "default"},
+        ),
+    )
+    assert state.run_started_at is not None
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="run_error",
+            run_id="r",
+            turn_id="t",
+            payload={"code": "provider_error", "message": "unavailable"},
+        ),
+    )
+    assert state.run_started_at is None
+
+    # A fresh session load resets both the elapsed anchor and the spinner.
+    state = state.model_copy(update={"spinner_frame": 4})
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="session_loaded",
+            payload={"session_id": "s2", "workspace": ".", "model": "test"},
+        ),
+    )
+    assert state.run_started_at is None
+    assert state.spinner_frame == 0

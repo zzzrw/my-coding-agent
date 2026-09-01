@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Literal
 
 from pydantic import TypeAdapter
@@ -33,6 +34,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             policy=_policy(payload.get("policy"), state.policy),
             pending_approval=None,
             active_tool_call_id=None,
+            run_started_at=time.monotonic(),
         )
 
     elif event.type == "run_finished":
@@ -48,6 +50,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 active_turn_id=None,
                 active_tool_call_id=None,
                 pending_approval=None,
+                run_started_at=None,
             )
 
     elif event.type == "run_error":
@@ -58,6 +61,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 active_turn_id=None,
                 active_tool_call_id=None,
                 pending_approval=None,
+                run_started_at=None,
             )
             _append_system(
                 transcript, payload.get("message", "runtime error"), level="error"
@@ -115,12 +119,36 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 item_id=call_id,
                 tool_call_id=call_id,
                 tool_name=tool_name,
-                text=_arguments_text(payload.get("arguments")),
+                text="",
                 tool_status="running",
                 command=_command_text(payload.get("arguments"), tool_name),
             )
             _append_or_update(transcript, row, tool_call_id=call_id)
             updates.update(active_tool_call_id=call_id, status="running")
+
+    elif event.type == "tool_output_delta":
+        call_id = _non_empty_str(payload.get("tool_call_id"))
+        if call_id:
+            text = _text(payload.get("text"))
+            index = _find_tool(transcript, call_id)
+            if index is None:
+                # A delta can arrive before its tool_started is reduced (e.g.
+                # across a bridge); create the running row from the delta.
+                transcript.append(
+                    TranscriptItem(
+                        kind="tool",
+                        item_id=call_id,
+                        tool_call_id=call_id,
+                        text=text,
+                        tool_status="running",
+                    )
+                )
+                updates.update(active_tool_call_id=call_id, status="running")
+            else:
+                row = transcript[index]
+                # Streamed chunks fill the tool row body; tool_status stays
+                # "running" until tool_finished replaces the text.
+                transcript[index] = row.model_copy(update={"text": row.text + text})
 
     elif event.type == "tool_finished":
         call_id = _non_empty_str(payload.get("tool_call_id"))
@@ -208,6 +236,8 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             active_turn_id=None,
             active_tool_call_id=None,
             pending_approval=None,
+            run_started_at=None,
+            spinner_frame=0,
             transcript=_projected_transcript(payload.get("history"))
             + [row for row in state.transcript if row.kind == "local_command"],
         )
@@ -449,14 +479,6 @@ def _tool_status(value: object, ok: bool, error: str, text: str) -> str:
 def _tool_error_status(error: str, text: str) -> str:
     combined = f"{error} {text}".lower()
     return "cancelled" if re.search(r"\bcancelled\b", combined) else "error"
-
-
-def _arguments_text(value: object) -> str:
-    if not value:
-        return ""
-    if isinstance(value, str):
-        return value
-    return str(value)
 
 
 def _command_text(arguments: object, tool_name: str | None) -> str | None:
