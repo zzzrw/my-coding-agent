@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,6 +10,20 @@ from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import initial_state
+from coding_agent.tui.widgets import RewindPicker, _relative_time
+
+
+class _FakeRuntime:
+    def __init__(self) -> None:
+        self.status: str | None = None
+        self.forked: list[str] = []
+
+    def subscribe(self, callback):
+        return lambda: None
+
+    async def fork_at(self, message_id: str) -> str:
+        self.forked.append(message_id)
+        return f"restored:{message_id}"
 
 
 class _NoopRunner:
@@ -105,3 +119,40 @@ def test_user_message_row_carries_timestamp() -> None:
     row = state.transcript[-1]
     assert row.kind == "user"
     assert row.timestamp == stamp
+
+
+def test_relative_time_formats() -> None:
+    now = datetime.now(UTC)
+    assert _relative_time(None) == "-"
+    assert _relative_time(now - timedelta(seconds=30)) == "30s ago"
+    assert _relative_time(now - timedelta(minutes=5)) == "5m ago"
+    assert _relative_time(now - timedelta(hours=2)) == "2h ago"
+
+
+@pytest.mark.asyncio
+async def test_rewind_picker_selects_message_id() -> None:
+    from coding_agent.tui.app import CodingAgentApp
+
+    rows = [("user-1", "first prompt", "2m ago"), ("user-2", "second", "-")]
+
+    class Host(CodingAgentApp):
+        def __init__(self) -> None:
+            super().__init__(
+                runtime=_FakeRuntime(),
+                initial_state=initial_state("/tmp/project", "fake"),
+                branch_detector=lambda workspace: None,
+            )
+
+        def on_mount(self) -> None:
+            self.push_screen(RewindPicker(rows), callback=self._picked)
+
+        def _picked(self, value: str | None) -> None:
+            self._picked_value = value
+
+    app = Host()
+    async with app.run_test() as pilot:
+        picker = app.screen
+        assert isinstance(picker, RewindPicker)
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app._picked_value == "user-2"

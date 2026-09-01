@@ -4,7 +4,7 @@ import re
 import subprocess
 import time
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path
 from typing import ClassVar
@@ -411,6 +411,43 @@ def history_overlay_text(rows: Iterable[str]) -> Text:
     if not rows:
         body.append("  no tool calls yet\n")
     return body
+
+
+class RewindPicker(ModalScreen[str | None]):
+    """Modal picker of past user messages to fork from.
+
+    ``rows`` is a list of ``(message_id, preview, relative_time)`` tuples. Enter
+    or selecting an option dismisses with the chosen message id; Escape
+    dismisses with ``None``.
+    """
+
+    BINDINGS: ClassVar = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, rows: list[tuple[str, str, str]]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    def compose(self) -> ComposeResult:
+        with Container(id="rewind-picker"):
+            yield Static("Rewind — pick a message to fork from", id="rewind-picker-title")
+            yield OptionList(
+                *[
+                    Option(f"{preview}  {reltime}", id=message_id)
+                    for message_id, preview, reltime in self.rows
+                ],
+                id="rewind-picker-options",
+                markup=False,
+            )
+            yield Static("↑↓ select · Enter fork · Esc cancel", id="rewind-picker-hint")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        event.stop()
+        self.dismiss(event.option.id)
 
 
 class PermissionFullScreen(ModalScreen[bool]):
@@ -991,6 +1028,22 @@ def _row_id(item: TranscriptItem, index: int) -> str:
 
 def _short_id(value: str | None) -> str:
     return value[:8] if value else "-"
+
+
+def _relative_time(value: datetime | None) -> str:
+    """Human relative time for a transcript row, or '-' when unknown."""
+    if value is None:
+        return "-"
+    seconds = max(0, int((datetime.now(UTC) - value).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
 
 
 _GIT_BRANCH_TIMEOUT_SECONDS = 1.0
