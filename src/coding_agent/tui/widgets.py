@@ -193,6 +193,13 @@ class SubmitTextArea(TextArea):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area is self:
             self._update_command_palette()
+            # A non-empty draft means the user moved on; disarm the exit
+            # confirmation. (The programmatic clear in action_interrupt sets
+            # text to "", which must NOT disarm — the clear is the first press.)
+            if self.text:
+                app = self.app
+                if getattr(app, "_exit_armed", False):
+                    app._exit_armed = False
 
     @property
     def _palette_visible(self) -> bool:

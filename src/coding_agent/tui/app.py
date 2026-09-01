@@ -826,6 +826,8 @@ class CodingAgentApp(App[None]):
             and event.run_id != self.state.pending_approval.run_id
         ):
             return
+        if event.type == "run_started":
+            self._exit_armed = False
         previous = self.state
         self.state = reduce(self.state, event)
         if (

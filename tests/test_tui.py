@@ -1332,6 +1332,56 @@ async def test_idle_ctrl_c_on_empty_composer_requires_two_presses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_typing_disarms_exit_confirmation() -> None:
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        composer = pilot.app.query_one("#composer-input", TextArea)
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._exit_armed is True
+
+        # Typing a draft disarms the confirmation.
+        composer.text = "x"
+        await pilot.pause()
+        assert app._exit_armed is False
+
+        # Next ctrl+c clears the draft and re-arms instead of exiting.
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert composer.text == ""
+        assert app.is_running
+        assert app._exit_armed is True
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+    assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_run_start_disarms_exit_confirmation() -> None:
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._exit_armed is True
+
+        app._apply_event(
+            RuntimeEvent(
+                type="run_started",
+                run_id="r",
+                turn_id="t",
+                payload={"session_id": "s", "model": "fake", "policy": "default"},
+            )
+        )
+        assert app._exit_armed is False
+
+
+@pytest.mark.asyncio
 async def test_shutdown_aborts_run_returned_by_queued_submit_before_run_started_event() -> (
     None
 ):
