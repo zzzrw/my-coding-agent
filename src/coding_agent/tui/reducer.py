@@ -13,6 +13,10 @@ from coding_agent.tui.state import TranscriptItem, TuiState
 
 def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     """Apply one runtime event without mutating the input snapshot."""
+    if event.type == "heartbeat":
+        # Heartbeats only signal provider liveness; the W1 app timer drives the
+        # visible spinner/elapsed. Ignoring them leaves the state unchanged.
+        return state
     if _is_stale_run_event(state, event):
         return state
     payload = event.payload
@@ -169,6 +173,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 elapsed_seconds=_float_or_none(metadata.get("elapsed_seconds")),
                 truncated=_bool_or_none(metadata.get("truncated")),
                 exit_code=_int_or_none(metadata.get("exit_code")),
+                retries=_int_or_none(metadata.get("retries")),
             )
             if index is None:
                 transcript.append(replacement)
@@ -183,6 +188,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                         "elapsed_seconds": replacement.elapsed_seconds,
                         "truncated": replacement.truncated,
                         "exit_code": replacement.exit_code,
+                        "retries": replacement.retries,
                     }
                 )
             if (

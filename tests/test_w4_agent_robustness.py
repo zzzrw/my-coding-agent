@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.policy.approval import DefaultApprovalPolicy
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import LLMEvent, Message, ToolCall
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.runtime.runtime import AgentRuntime
@@ -20,6 +21,9 @@ from coding_agent.session.store import SessionStore
 from coding_agent.tools.executor import ToolExecutor, _retryable
 from coding_agent.tools.models import ToolResult, ToolSchema
 from coding_agent.tools.registry import ToolRegistry
+from coding_agent.tui.reducer import reduce
+from coding_agent.tui.state import TranscriptItem, initial_state
+from coding_agent.tui.widgets import _tool_footer
 
 
 class _NoopBroker:
@@ -387,3 +391,83 @@ async def test_compact_omits_summary_when_summarizer_fails(tmp_path):
     await runtime.compact()
     compaction = [r for r in store.records() if r.type == "compaction"]
     assert compaction and "summary" not in compaction[-1].payload
+
+
+# --------------------------------------------------------------------------
+# Task 4: TUI surfacing (retry footer + notices)
+# --------------------------------------------------------------------------
+
+
+def test_tool_footer_shows_retry_count():
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="flaky",
+        text="ok",
+        tool_status="success",
+        retries=2,
+    )
+    footer = _tool_footer(item)
+    assert footer is not None
+    assert "· retried 2×" in footer
+
+    # No retries -> no retried marker in the footer.
+    plain = item.model_copy(update={"retries": None})
+    assert "retried" not in (_tool_footer(plain) or "")
+
+
+def test_tool_footer_omits_retry_marker_when_absent():
+    item = TranscriptItem(
+        kind="tool",
+        item_id="c1",
+        tool_call_id="c1",
+        tool_name="flaky",
+        text="ok",
+        tool_status="success",
+    )
+    footer = _tool_footer(item)
+    assert footer is None
+
+
+def test_heartbeat_is_noop_in_reducer():
+    state = initial_state(".", "test")
+    before = state
+    state = reduce(
+        state,
+        RuntimeEvent(type="heartbeat", payload={"elapsed_seconds": 5.0}),
+    )
+    assert state == before
+
+
+def test_reducer_copies_retries_onto_tool_finished():
+    state = initial_state(".", "test")
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="tool_finished",
+            payload={
+                "tool_call_id": "c1",
+                "tool_name": "flaky",
+                "ok": False,
+                "error": "tool timed out",
+                "content": "",
+                "metadata": {"retries": 2, "exit_code": 1},
+            },
+        ),
+    )
+    row = next(r for r in state.transcript if r.tool_call_id == "c1")
+    assert row.retries == 2
+
+
+def test_reducer_retries_defaults_to_none_when_metadata_missing():
+    state = initial_state(".", "test")
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="tool_finished",
+            payload={"tool_call_id": "c1", "ok": True, "content": "ok"},
+        ),
+    )
+    row = next(r for r in state.transcript if r.tool_call_id == "c1")
+    assert row.retries is None

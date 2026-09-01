@@ -652,6 +652,8 @@ def _tool_footer(item: TranscriptItem) -> str | None:
         parts.append("· truncated")
     if item.exit_code not in (None, 0):
         parts.append(f"· exit {item.exit_code}")
+    if item.retries:
+        parts.append(f"· retried {item.retries}×")
     if not parts:
         return None
     return "  ⎿  " + " ".join(parts)

@@ -19,6 +19,7 @@ class TranscriptItem(BaseModel):
     elapsed_seconds: float | None = None
     truncated: bool | None = None
     exit_code: int | None = None
+    retries: int | None = None
     expanded: bool = False
 
 
