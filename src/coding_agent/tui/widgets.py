@@ -24,7 +24,12 @@ class TranscriptRow(Static):
 
     def __init__(self, item: TranscriptItem, *, index: int) -> None:
         row_id = _row_id(item, index)
-        super().__init__(_row_text(item), id=row_id, markup=False)
+        super().__init__(
+            _row_text(item),
+            id=row_id,
+            markup=False,
+            classes=f"row row-{item.kind}",
+        )
         self.item = item
 
 

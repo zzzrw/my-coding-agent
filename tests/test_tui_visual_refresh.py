@@ -20,8 +20,10 @@ from coding_agent.runtime.runner import AgentRunner
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.models import ToolResult
 from coding_agent.tools.registry import ToolRegistry
+from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.reducer import reduce
-from coding_agent.tui.state import initial_state
+from coding_agent.tui.state import TranscriptItem, initial_state
+from coding_agent.tui.widgets import TranscriptRow
 
 
 class ScriptedProvider:
@@ -266,3 +268,29 @@ async def test_runner_tool_finished_payload_carries_result_metadata(tmp_path):
         "elapsed_seconds": 1.5,
         "truncated": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 2: row spacing and per-kind CSS classes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kind", ["user", "assistant", "tool", "system", "local_command"]
+)
+def test_transcript_row_carries_row_and_kind_classes(kind):
+    item = TranscriptItem(kind=kind, item_id=f"i-{kind}", text="x")
+    row = TranscriptRow(item, index=0)
+
+    classes = set(row.classes)
+    assert "row" in classes
+    assert f"row-{kind}" in classes
+
+
+def test_app_css_has_row_spacing_and_full_width_user_card():
+    css = CodingAgentApp.CSS
+
+    assert "#transcript .row" in css
+    assert ".row.user" in css
+    assert "width: 1fr" in css
+    assert "row-local_command" in css or ".row.local_command" in css

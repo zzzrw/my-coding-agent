@@ -145,6 +145,9 @@ class CodingAgentApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     #transcript { height: 1fr; width: 1fr; }
+    #transcript .row { margin: 0 0 1 0; width: 1fr; }
+    .row.user { width: 1fr; background: $surface; border: round $primary; padding: 0 1; margin: 1 0 1 0; }
+    .row.local_command { color: $text-muted; }
     #composer { height: 4; width: 1fr; }
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
