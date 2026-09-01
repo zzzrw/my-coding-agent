@@ -149,8 +149,43 @@ def _git_push_arguments_are_catastrophic(arguments: list[str]) -> bool:
     return False
 
 
+def _matching_parenthesis(command: str, open_index: int) -> int:
+    """Return the index of the ``)`` matching the ``(`` at ``open_index``."""
+    depth = 0
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    index = open_index
+    while index < len(command):
+        character = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            index += 1
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            index += 1
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            index += 1
+            continue
+        if not single_quoted and not double_quoted and character == "(":
+            depth += 1
+        elif not single_quoted and not double_quoted and character == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
 def _command_substitutions_are_catastrophic(command: str) -> bool:
-    """Inspect executable command substitutions while respecting shell quoting."""
+    """Inspect executable command/process substitutions respecting shell quoting."""
     single_quoted = False
     double_quoted = False
     escaped = False
@@ -174,7 +209,17 @@ def _command_substitutions_are_catastrophic(command: str) -> bool:
             index += 1
             continue
         if not single_quoted and command.startswith("$(", index):
-            end = command.find(")", index + 2)
+            end = _matching_parenthesis(command, index + 1)
+            if end != -1 and classify_command(command[index + 2 : end]).catastrophic:
+                return True
+            index += 2
+            continue
+        if (
+            not single_quoted
+            and not double_quoted
+            and (command.startswith("<(", index) or command.startswith(">(", index))
+        ):
+            end = _matching_parenthesis(command, index + 1)
             if end != -1 and classify_command(command[index + 2 : end]).catastrophic:
                 return True
             index += 2
@@ -204,6 +249,63 @@ def _git_push_is_catastrophic(tokens: list[str]) -> bool:
         if push_index is None or tokens[push_index] != "push":
             continue
         return _git_push_arguments_are_catastrophic(tokens[push_index + 1 :])
+    return False
+
+
+_GIT_REMOTE_DESTRUCTIVE_ACTIONS = {"remove", "rm", "delete", "prune"}
+
+
+def _git_remote_is_catastrophic(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if Path(token).name != "git":
+            continue
+        subcommand_index = _git_push_subcommand_index(tokens, index)
+        if subcommand_index is None or tokens[subcommand_index] != "remote":
+            continue
+        action_index = subcommand_index + 1
+        if (
+            action_index < len(tokens)
+            and tokens[action_index] in _GIT_REMOTE_DESTRUCTIVE_ACTIONS
+        ):
+            return True
+    return False
+
+
+def _git_config_alias_value_is_shell(value: str) -> str | None:
+    """Return the shell body when ``value`` defines a ``!``-prefixed git alias."""
+    key, separator, body = value.partition("=")
+    if not separator or not key.startswith("alias."):
+        return None
+    return body[1:] if body.startswith("!") else None
+
+
+def _git_config_shell_alias_is_catastrophic(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if Path(token).name != "git":
+            continue
+        option_index = index + 1
+        while option_index < len(tokens):
+            option, separator, value = tokens[option_index].partition("=")
+            if option == "--config-env":
+                # The value is resolved from an environment variable we cannot
+                # inspect, so it could inject a shell alias (alias.<name>=!...)
+                # that bypasses catastrophic policy. Conservatively reject.
+                return True
+            if option == "-c":
+                if not separator:
+                    option_index += 1
+                    if option_index >= len(tokens):
+                        break
+                    value = tokens[option_index]
+                body = _git_config_alias_value_is_shell(value)
+                if body is not None and classify_command(body).catastrophic:
+                    return True
+                option_index += 1
+                continue
+            if option.startswith("-"):
+                option_index += 1
+                continue
+            break
     return False
 
 
@@ -241,6 +343,8 @@ def classify_command(command: str) -> CommandClassification:
     if (
         _rm_is_catastrophic(tokens)
         or _git_push_is_catastrophic(tokens)
+        or _git_remote_is_catastrophic(tokens)
+        or _git_config_shell_alias_is_catastrophic(tokens)
         or _nested_shell_is_catastrophic(tokens)
         or _command_substitutions_are_catastrophic(command)
     ):

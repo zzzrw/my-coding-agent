@@ -84,7 +84,6 @@ class AgentRunner:
             text_parts: list[str] = []
             calls: OrderedDict[str, dict[str, str]] = OrderedDict()
             finish_reason: str | None = None
-            tool_calls_completed = False
             provider_error: str | None = None
             try:
                 async for event in self.provider.stream(
@@ -119,8 +118,6 @@ class AgentRunner:
                     elif event.type in {"tool_call_end", "response_end"}:
                         if event.finish_reason:
                             finish_reason = event.finish_reason
-                        if event.finish_reason == "tool_calls":
-                            tool_calls_completed = True
                         usage = event.usage or usage
                     elif event.type == "error":
                         provider_error = event.error or "provider error"
@@ -162,7 +159,7 @@ class AgentRunner:
                     ToolCall(id=call_id, name=raw["name"], arguments=arguments)
                 )
 
-            if calls and (not tool_calls_completed or finish_reason == "length"):
+            if calls and finish_reason != "tool_calls":
                 await self._emit(
                     "notice",
                     run_id,
