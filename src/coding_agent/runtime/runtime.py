@@ -15,6 +15,7 @@ from coding_agent.runtime.models import Message, RuntimeStatus, ToolCall, TurnOu
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.session.models import ApprovalRequest, SessionSummary
 from coding_agent.session.store import SessionStore
+from coding_agent.tools.filesystem import _atomic_write
 from coding_agent.tools.models import ToolResult
 
 
@@ -631,3 +632,32 @@ class AgentRuntime:
                 "forced": True,
             },
         )
+
+    async def undo(self) -> None:
+        """Restore the most recent file mutation from the executor's journal.
+
+        Pops the latest ``(path, original)`` snapshot recorded by the executor
+        and restores the prior content (or unlinks the file when it did not
+        exist), then emits a local notice so the transcript shows an undo row.
+        An empty journal is a no-op that still emits a notice.
+        """
+        await self._reserve_operation()
+        try:
+            journal = getattr(self._runner.executor, "journal", None)
+            entry = journal.pop() if journal is not None else None
+            if entry is None:
+                await self._emit("notice", level="info", message="nothing to undo")
+                return
+            path, original = entry
+            if original is None:
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+            else:
+                _atomic_write(path, original)
+            await self._emit(
+                "notice",
+                command=f"undo {path}",
+                message=f"undid write to {path}",
+            )
+        finally:
+            self._release_operation()

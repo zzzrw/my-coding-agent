@@ -21,7 +21,7 @@ from coding_agent.runtime.models import Message
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
-from coding_agent.tools.executor import ToolExecutor
+from coding_agent.tools.executor import MutationJournal, ToolExecutor
 from coding_agent.tools.filesystem import (
     make_edit_file_tool,
     make_read_file_tool,
@@ -161,10 +161,11 @@ def create_app(
     )
     registry = _make_registry()
     approval_policy = DefaultApprovalPolicy()
+    journal = MutationJournal()
 
     def runner_factory(store, context_policy, broker):
         executor = ToolExecutor(
-            registry, approval_policy, broker, memory=DecisionMemory()
+            registry, approval_policy, broker, memory=DecisionMemory(), journal=journal
         )
         return AgentRunner(
             provider=llm_provider,

@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -26,6 +27,29 @@ class ApprovalBroker(Protocol):
     def cancel_all(self) -> None: ...
 
 
+class MutationJournal:
+    """Thread-safe stack of file snapshots taken before successful mutations.
+
+    Each entry is ``(resolved path, original content | None)``; ``original`` is
+    ``None`` when the file did not exist before the mutation (undo unlinks it).
+    ``pop`` returns the most recent entry, or ``None`` when the stack is empty.
+    """
+
+    def __init__(self) -> None:
+        self._entries: list[tuple[Path, str | None]] = []
+        self._lock = threading.Lock()
+
+    def push(self, path: Path, original: str | None) -> None:
+        with self._lock:
+            self._entries.append((path, original))
+
+    def pop(self) -> tuple[Path, str | None] | None:
+        with self._lock:
+            if not self._entries:
+                return None
+            return self._entries.pop()
+
+
 class ToolExecutor:
     def __init__(
         self,
@@ -35,6 +59,7 @@ class ToolExecutor:
         hooks: HookSet | None = None,
         default_timeout_seconds: float = 120.0,
         memory: DecisionMemory | None = None,
+        journal: MutationJournal | None = None,
     ) -> None:
         self.registry = registry
         self.policy = policy
@@ -42,6 +67,30 @@ class ToolExecutor:
         self.hooks = hooks or HookSet()
         self.default_timeout_seconds = default_timeout_seconds
         self.memory = memory
+        self.journal = journal
+
+    @staticmethod
+    def _mutation_snapshot(
+        active_call: ToolCall, workspace: Path
+    ) -> tuple[Path, str | None] | None:
+        """Snapshot a mutation's target file, or ``None`` when not applicable.
+
+        Path resolution mirrors the write/edit tools (``workspace / path``,
+        resolved). ``original`` is the file's current content, or ``None`` when
+        the file does not exist or cannot be read so undo can unlink it.
+        """
+        raw = active_call.arguments.get("path")
+        if not isinstance(raw, str) or not raw:
+            return None
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        path = candidate.resolve()
+        try:
+            original = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            original = None
+        return path, original
 
     async def execute(
         self,
@@ -120,6 +169,13 @@ class ToolExecutor:
                     self.memory.remember(sig, "allow", scope=remember)
                 outside_once = decision.allow_outside_once
 
+            journal_path: Path | None = None
+            original: str | None = None
+            if self.journal is not None and tool.schema.risk_level == "mutate_file":
+                snapshot = self._mutation_snapshot(active_call, workspace)
+                if snapshot is not None:
+                    journal_path, original = snapshot
+
             context = ToolContext(
                 workspace=workspace,
                 permission_mode=permission_mode,
@@ -135,6 +191,8 @@ class ToolExecutor:
                 replacement = await hook(active_call, result)
                 if replacement is not None:
                     result = replacement
+            if result.ok and self.journal is not None and journal_path is not None:
+                self.journal.push(journal_path, original)
             return self._normalize(call, result)
         except Exception as exc:  # noqa: BLE001
             for hook in self.hooks.on_error:

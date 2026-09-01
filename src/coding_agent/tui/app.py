@@ -371,6 +371,16 @@ class CodingAgentApp(App[None]):
                 self._show_notice("usage: /compact")
                 return
             self._start_compact()
+        elif name == "undo":
+            if args:
+                self._show_notice("usage: /undo")
+                return
+            self.run_worker(
+                self._runtime_action("undo"),
+                name="undo",
+                group="runtime",
+                exit_on_error=False,
+            )
 
     def _request_shutdown(self) -> None:
         """Abort any runtime-owned turn before Textual tears down the UI."""

@@ -10,6 +10,7 @@ class CommandSuggestion:
 
     name: str
     description: str
+    usage: str = ""
 
 
 _COMMANDS = (
@@ -23,6 +24,7 @@ _COMMANDS = (
     CommandSuggestion("quit", "Exit the application"),
     CommandSuggestion("resume", "Resume a session by id or prefix"),
     CommandSuggestion("session", "Choose a session to resume"),
+    CommandSuggestion("undo", "Undo the last file write/edit", usage="/undo"),
 )
 SUPPORTED_COMMANDS = frozenset(item.name for item in _COMMANDS)
 
