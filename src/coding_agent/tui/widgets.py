@@ -4,7 +4,7 @@ import re
 import subprocess
 import time
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from difflib import unified_diff
 from pathlib import Path
 from typing import ClassVar
@@ -151,6 +151,13 @@ class SubmitTextArea(TextArea):
             self.offset = offset
             super().__init__()
 
+    class RewindRequested(Message):
+        """Double-Esc while idle with an empty composer: open the rewind picker."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_escape_at: float = 0.0
+
     def on_mount(self) -> None:
         self._update_command_palette()
 
@@ -160,6 +167,15 @@ class SubmitTextArea(TextArea):
             event.prevent_default()
             self._set_palette_visible(False)
             return
+        if event.key == "escape" and not self._palette_visible:
+            now = time.monotonic()
+            if self.text == "" and now - self._last_escape_at <= 0.8:
+                event.stop()
+                event.prevent_default()
+                self._last_escape_at = 0.0
+                self.post_message(self.RewindRequested())
+                return
+            self._last_escape_at = now
         if event.key in {"up", "down"} and self._palette_visible:
             event.stop()
             event.prevent_default()
@@ -429,7 +445,9 @@ class RewindPicker(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="rewind-picker"):
-            yield Static("Rewind — pick a message to fork from", id="rewind-picker-title")
+            yield Static(
+                "Rewind — pick a message to fork from", id="rewind-picker-title"
+            )
             yield OptionList(
                 *[
                     Option(f"{preview}  {reltime}", id=message_id)
@@ -443,9 +461,7 @@ class RewindPicker(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    def on_option_list_option_selected(
-        self, event: OptionList.OptionSelected
-    ) -> None:
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         self.dismiss(event.option.id)
 

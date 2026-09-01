@@ -22,11 +22,13 @@ from coding_agent.tui.widgets import (
     HistoryScreen,
     PermissionFullScreen,
     PermissionModeScreen,
+    RewindPicker,
     SessionSelector,
     StatusLine,
     SubmitTextArea,
     TranscriptRow,
     TranscriptView,
+    _relative_time,
     detect_git_branch,
 )
 
@@ -254,9 +256,11 @@ class CodingAgentApp(App[None]):
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
     #statusline { height: 1; width: 1fr; }
-    ApprovalScreen, HelpScreen, HistoryScreen, SessionSelector, PermissionModeScreen { align: center middle; }
-    #approval, #permission-full, #permission-mode, #session-selector, #help, #history { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    ApprovalScreen, HelpScreen, HistoryScreen, SessionSelector, PermissionModeScreen, RewindPicker { align: center middle; }
+    #approval, #permission-full, #permission-mode, #session-selector, #help, #history, #rewind-picker { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #help, #history { max-height: 80%; overflow-y: auto; }
+    #rewind-picker-options { height: auto; max-height: 18; }
+    #rewind-picker-title { margin-bottom: 1; text-style: bold; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
     #approval-diff { border: round $accent; max-height: 12; overflow-y: auto; margin-bottom: 1; }
     #approval-remember-label { margin-bottom: 1; }
@@ -437,6 +441,42 @@ class CodingAgentApp(App[None]):
         else:
             self._history_index += 1
             composer.text = self.prompt_history[self._history_index]
+
+    def on_submit_text_area_rewind_requested(self, event) -> None:
+        event.stop()
+        if self.state.status != "idle":
+            self._show_notice("A run is active; cannot rewind")
+            return
+        rows = self._rewind_rows()
+        if not rows:
+            self._show_notice("No earlier user messages to rewind to")
+            return
+        self.push_screen(RewindPicker(rows), callback=self._rewind_selected)
+
+    def _rewind_rows(self) -> list[tuple[str, str, str]]:
+        rows: list[tuple[str, str, str]] = []
+        for item in self.state.transcript:
+            if item.kind == "user":
+                preview = item.text[:60] or "(empty prompt)"
+                rows.append((item.item_id, preview, _relative_time(item.timestamp)))
+        return rows
+
+    async def _rewind_selected(self, message_id: str | None) -> None:
+        if message_id:
+            self.run_worker(
+                self._fork_from_message(message_id),
+                name="rewind-fork",
+                group="runtime",
+                exit_on_error=False,
+            )
+
+    async def _fork_from_message(self, message_id: str) -> None:
+        try:
+            prompt = await self.runtime.fork_at(message_id)
+            composer = self.query_one("#composer-input", SubmitTextArea)
+            composer.text = prompt
+        except Exception as exc:  # noqa: BLE001 - user-facing fork errors
+            self._show_notice(f"rewind failed: {exc}", level="error")
 
     def action_open_help(self) -> None:
         """Push the help overlay (bound to ``?`` and the ``/help`` command)."""

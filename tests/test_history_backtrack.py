@@ -3,14 +3,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from coding_agent.context.truncate import TruncatePolicy
-from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.policy.approval import DefaultApprovalPolicy
+from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import Message, TurnOutcome
 from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import initial_state
-from coding_agent.tui.widgets import RewindPicker, _relative_time
+from coding_agent.tui.widgets import RewindPicker, SubmitTextArea, _relative_time
 
 
 class _FakeRuntime:
@@ -37,7 +37,9 @@ def _store_with_turns(root, *, turns: int = 2) -> SessionStore:
     )
     for index in range(turns):
         tid = f"t{index + 1}"
-        store.append_new("turn_start", {"turn_id": tid}, run_id=f"r{index + 1}", turn_id=tid)
+        store.append_new(
+            "turn_start", {"turn_id": tid}, run_id=f"r{index + 1}", turn_id=tid
+        )
         store.append_new(
             "user_message",
             {"message": Message(role="user", content=f"prompt {index + 1}")},
@@ -45,7 +47,10 @@ def _store_with_turns(root, *, turns: int = 2) -> SessionStore:
             turn_id=tid,
         )
         store.append_new(
-            "turn_end", {"reason": "completed", "turn_id": tid}, run_id=f"r{index + 1}", turn_id=tid
+            "turn_end",
+            {"reason": "completed", "turn_id": tid},
+            run_id=f"r{index + 1}",
+            turn_id=tid,
         )
     return store
 
@@ -156,3 +161,83 @@ async def test_rewind_picker_selects_message_id() -> None:
         await pilot.press("down", "enter")
         await pilot.pause()
         assert app._picked_value == "user-2"
+
+
+@pytest.mark.asyncio
+async def test_double_escape_opens_rewind_picker() -> None:
+    from coding_agent.tui.app import CodingAgentApp
+    from coding_agent.tui.state import initial_state
+
+    app = CodingAgentApp(
+        runtime=_FakeRuntime(),
+        initial_state=initial_state("/tmp/project", "fake"),
+        branch_detector=lambda workspace: None,
+    )
+    async with app.run_test() as pilot:
+        # Seed a user message so the picker has a row.
+        app._apply_event(
+            RuntimeEvent(
+                type="user_message",
+                run_id="r",
+                payload={"message_id": "user-t1", "text": "hello"},
+            )
+        )
+        await pilot.pause()
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = ""
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, RewindPicker)
+
+
+@pytest.mark.asyncio
+async def test_rewind_selected_forks_and_refills_composer() -> None:
+    from coding_agent.tui.app import CodingAgentApp
+    from coding_agent.tui.state import initial_state
+
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state("/tmp/project", "fake"),
+        branch_detector=lambda workspace: None,
+    )
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        await pilot.pause()
+        await app._rewind_selected("user-t1")
+        await pilot.pause()
+        assert runtime.forked == ["user-t1"]
+        assert composer.text == "restored:user-t1"
+
+
+@pytest.mark.asyncio
+async def test_rewind_rejected_while_run_active() -> None:
+    from coding_agent.tui.app import CodingAgentApp
+    from coding_agent.tui.state import initial_state
+
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state("/tmp/project", "fake"),
+        branch_detector=lambda workspace: None,
+    )
+    async with app.run_test() as pilot:
+        app._apply_event(
+            RuntimeEvent(
+                type="run_started",
+                run_id="r",
+                turn_id="t",
+                payload={"session_id": "s", "model": "fake", "policy": "default"},
+            )
+        )
+        await pilot.pause()
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = ""
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, RewindPicker)
+        assert runtime.forked == []

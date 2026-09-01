@@ -49,7 +49,7 @@ def _find_user_message_record(
     prefix = "user-"
     if not message_id.startswith(prefix):
         return None
-    turn_id = message_id[len(prefix):]
+    turn_id = message_id[len(prefix) :]
     for index, record in enumerate(records):
         if record.type == "user_message" and record.turn_id == turn_id:
             return index, record
@@ -663,9 +663,7 @@ class AgentRuntime:
             self.store = new_store
             self._permission_mode = "default"
             self._last_outcome = None
-            self._status = RuntimeStatus(
-                context_window=new_store.header.context_window
-            )
+            self._status = RuntimeStatus(context_window=new_store.header.context_window)
             self._runner = self._make_runner()
             await self._publish(
                 RuntimeEvent(
