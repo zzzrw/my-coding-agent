@@ -338,6 +338,41 @@ def help_overlay_text() -> Text:
     return body
 
 
+class HistoryScreen(ModalScreen[None]):
+    """Modal call-history inbox listing recent tool/approval records.
+
+    ``compose`` yields a single bordered ``Static`` built from
+    ``history_overlay_text(rows)``; ``body`` keeps the renderable accessible so
+    tests can inspect the content without an active App. Styling mirrors
+    ``HelpScreen`` (bordered, ``$surface`` background, centered).
+    """
+
+    BINDINGS: ClassVar = [("escape", "close_history", "Close")]
+
+    def __init__(self, rows: Iterable[str]) -> None:
+        super().__init__()
+        self.rows = list(rows)
+        self.body = history_overlay_text(self.rows)
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.body, id="history", markup=False)
+
+    def action_close_history(self) -> None:
+        self.dismiss(None)
+
+
+def history_overlay_text(rows: Iterable[str]) -> Text:
+    """Build the inbox overlay body from compact per-record row strings."""
+    body = Text()
+    body.append("Call history", style="bold")
+    body.append("\n")
+    for row in rows:
+        body.append(f"  {row}\n")
+    if not rows:
+        body.append("  no tool calls yet\n")
+    return body
+
+
 class PermissionFullScreen(ModalScreen[bool]):
     """Visible high-risk confirmation before enabling unrestricted permissions."""
 

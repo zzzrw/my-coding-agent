@@ -4,6 +4,8 @@ Task 1: help overlay — ``CommandSuggestion`` usage text, the ``HelpScreen``
 modal, ``/help`` dispatch, and the ``?`` keybinding.
 Task 2: composer prompt-history ring with draft preservation.
 Task 3: session selector workspace filter with a browse-all toggle.
+Task 4: call-history inbox — ``_inbox_rows`` from ``store.records()`` newest
+first, the ``HistoryScreen`` modal, and ``/inbox`` dispatch.
 """
 
 from __future__ import annotations
@@ -15,10 +17,22 @@ import pytest
 from textual.widgets import OptionList
 
 from coding_agent.runtime.events import RuntimeEvent
-from coding_agent.session.models import SessionSummary
+from coding_agent.runtime.models import ToolCall
+from coding_agent.session.models import SessionRecord, SessionSummary
+from coding_agent.tools.models import ToolResult
 from coding_agent.tui.app import CodingAgentApp, HelpScreen
 from coding_agent.tui.state import TuiState, initial_state
-from coding_agent.tui.widgets import SessionSelector, SubmitTextArea
+from coding_agent.tui.widgets import HistoryScreen, SessionSelector, SubmitTextArea
+
+
+class FakeStore:
+    """Minimal stand-in for ``SessionStore`` exposing ``records()``."""
+
+    def __init__(self, records: list[SessionRecord] | None = None) -> None:
+        self._records = list(records) if records else []
+
+    def records(self) -> list[SessionRecord]:
+        return list(self._records)
 
 
 class FakeRuntime:
@@ -26,6 +40,7 @@ class FakeRuntime:
         self.subscribers: list[Callable[[RuntimeEvent], Awaitable[None]]] = []
         self.submitted: list[str] = []
         self.sessions: list[SessionSummary] = []
+        self.store = FakeStore()
         self.status = type("RuntimeStatus", (), {"usage": None})()
 
     def subscribe(
@@ -347,3 +362,182 @@ async def test_open_session_selector_defaults_to_current_workspace():
         assert options.option_count == 2
         assert options.get_option_at_index(0).id == "ws-a"
         assert options.get_option_at_index(1).id == "other-b"
+
+
+# --- Task 4: call-history inbox ---
+
+
+def _tool_call_record(
+    call_id: str, name: str, arguments: dict[str, object], when: datetime
+) -> SessionRecord:
+    return SessionRecord(
+        id=f"call-{call_id}",
+        seq=0,
+        timestamp=when,
+        type="tool_call",
+        payload={"tool_call": ToolCall(id=call_id, name=name, arguments=arguments)},
+    )
+
+
+def _tool_result_record(
+    call_id: str,
+    name: str,
+    *,
+    ok: bool,
+    error: str | None,
+    when: datetime,
+) -> SessionRecord:
+    return SessionRecord(
+        id=f"result-{call_id}",
+        seq=0,
+        timestamp=when,
+        type="tool_result",
+        payload={
+            "result": ToolResult(
+                tool_call_id=call_id,
+                tool_name=name,
+                ok=ok,
+                content="",
+                error=error,
+            )
+        },
+    )
+
+
+def _approval_record(decision: str, tool_name: str, when: datetime) -> SessionRecord:
+    return SessionRecord(
+        id=f"approval-{decision}-{tool_name}",
+        seq=0,
+        timestamp=when,
+        type="approval",
+        payload={
+            "request_id": "r1",
+            "tool_name": tool_name,
+            "decision": decision,
+            "scope": "once",
+            "feedback": None,
+            "tool_call_id": "c1",
+        },
+    )
+
+
+def fake_runtime_with_records() -> FakeRuntime:
+    """A runtime whose store carries tool/approval records at distinct times."""
+    runtime = FakeRuntime()
+    when = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    runtime.store = FakeStore(
+        [
+            _tool_call_record("c1", "run_command", {"command": "ls -la"}, when=when),
+            _tool_call_record(
+                "c2",
+                "write_file",
+                {"path": "a.txt", "content": "x"},
+                when=when + timedelta(minutes=1),
+            ),
+            _tool_result_record(
+                "c2",
+                "write_file",
+                ok=True,
+                error=None,
+                when=when + timedelta(minutes=2),
+            ),
+            _approval_record("approve", "write_file", when=when + timedelta(minutes=3)),
+            _tool_result_record(
+                "c3",
+                "run_command",
+                ok=False,
+                error="cancelled by user",
+                when=when + timedelta(minutes=4),
+            ),
+        ]
+    )
+    return runtime
+
+
+def test_parse_command_inbox():
+    from coding_agent.tui.commands import parse_command
+
+    assert parse_command("/inbox").name == "inbox"
+    assert parse_command("/inbox").args == []
+
+
+def test_inbox_builds_rows_from_records_newest_first():
+    app = CodingAgentApp(
+        runtime=fake_runtime_with_records(), initial_state=make_state()
+    )
+    rows = app._inbox_rows()
+    assert rows
+    # the newest record (cancelled run_command result) is first
+    assert "cancelled" in rows[0]
+    assert "run_command" in rows[0]
+    # an approval record surfaces as "approve <tool>"
+    assert any("approve write_file" in row for row in rows)
+    # tool calls carry their name plus compact args
+    assert any("write_file" in row and "path=a.txt" in row for row in rows)
+
+
+def test_inbox_rows_ignores_other_record_types_and_empty_store():
+    app = CodingAgentApp(runtime=FakeRuntime(), initial_state=make_state())
+    assert app._inbox_rows() == []
+
+
+def test_inbox_rows_capped_at_twenty():
+    runtime = FakeRuntime()
+    when = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    records = [
+        _tool_call_record(
+            f"c{i}",
+            "run_command",
+            {"command": f"cmd {i}"},
+            when=when + timedelta(minutes=i),
+        )
+        for i in range(25)
+    ]
+    runtime.store = FakeStore(records)
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+    rows = app._inbox_rows()
+    assert len(rows) == 20
+    # newest first: the latest record (c24) is at the head
+    assert "cmd 24" in rows[0]
+    assert "cmd 5" in rows[-1]
+
+
+@pytest.mark.asyncio
+async def test_inbox_command_opens_history_screen():
+    app = CodingAgentApp(
+        runtime=fake_runtime_with_records(), initial_state=make_state()
+    )
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer-input", SubmitTextArea)
+        composer.text = "/inbox"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, HistoryScreen)
+        # the modal renders the rows, including the approval summary
+        assert "approve write_file" in app.screen.body.plain
+
+
+@pytest.mark.asyncio
+async def test_history_screen_renders_rows_and_closes():
+    from coding_agent.tui.widgets import history_overlay_text
+
+    body = history_overlay_text(["approve write_file", "tool run_command ls -la"])
+    assert "Call history" in body.plain
+    assert "approve write_file" in body.plain
+
+    app = CodingAgentApp(runtime=FakeRuntime(), initial_state=make_state())
+    async with app.run_test() as pilot:
+        app.push_screen(HistoryScreen(["one", "two"]))
+        await pilot.pause()
+        assert app.screen.body.plain.count("\n") >= 2
+        app.screen.action_close_history()
+        await pilot.pause()
+        assert not isinstance(app.screen, HistoryScreen)
+
+
+def test_history_screen_empty_state():
+    from coding_agent.tui.widgets import history_overlay_text
+
+    body = history_overlay_text([])
+    assert "no tool calls yet" in body.plain

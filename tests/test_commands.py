@@ -36,6 +36,7 @@ def test_unknown_command_is_returned_without_raising():
 def test_supported_commands_match_the_mvp_registry():
     assert SUPPORTED_COMMANDS == {
         "help",
+        "inbox",
         "new",
         "session",
         "resume",

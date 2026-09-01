@@ -19,6 +19,11 @@ _COMMANDS = (
     CommandSuggestion("context", "Show context usage", usage="/context"),
     CommandSuggestion("exit", "Exit the application", usage="/exit"),
     CommandSuggestion("help", "List available commands", usage="/help"),
+    CommandSuggestion(
+        "inbox",
+        "Show recent tool calls and approvals",
+        usage="/inbox",
+    ),
     CommandSuggestion("new", "Start a new session", usage="/new"),
     CommandSuggestion(
         "permission",

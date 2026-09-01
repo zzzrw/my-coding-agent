@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
 from typing import Any, ClassVar
 
 from textual import events
@@ -17,6 +18,7 @@ from coding_agent.tui.widgets import (
     ApprovalScreen,
     CommandComposer,
     HelpScreen,
+    HistoryScreen,
     PermissionFullScreen,
     PermissionModeScreen,
     SessionSelector,
@@ -34,6 +36,12 @@ _COMPACTING_CONFLICTS = frozenset(
 _PROMPT_HISTORY_MAX = 50
 """Maximum number of submitted prompts recalled in the composer."""
 
+_INBOX_MAX_ROWS = 20
+"""Maximum number of records shown in the call-history inbox."""
+
+_INBOX_COMPACT_ARG_CHARS = 120
+"""Length cap on the compact tool-argument summary in an inbox row."""
+
 
 class _PromptHistory(list[str]):
     """A prompt list capped at ``_PROMPT_HISTORY_MAX``, dropping oldest first."""
@@ -50,6 +58,70 @@ class _PromptHistory(list[str]):
     def extend(self, items: Iterable[str]) -> None:
         for item in items:
             self.append(item)
+
+
+def _inbox_compact_args(arguments: object) -> str:
+    """One-line, length-capped summary of a tool call's arguments.
+
+    ``run_command`` shows its ``command`` verbatim; other tools render
+    ``key=value`` pairs. Over-long summaries are truncated with an ellipsis.
+    """
+    if not isinstance(arguments, Mapping) or not arguments:
+        return ""
+    if "command" in arguments and isinstance(arguments["command"], str):
+        args_text = arguments["command"].strip()
+    else:
+        args_text = ", ".join(f"{key}={value}" for key, value in arguments.items())
+    if len(args_text) > _INBOX_COMPACT_ARG_CHARS:
+        args_text = args_text[:_INBOX_COMPACT_ARG_CHARS].rstrip() + "…"
+    return args_text
+
+
+def _inbox_result_status(result: object) -> str:
+    """Status label for a persisted tool result: success/error/cancelled."""
+    if getattr(result, "ok", None):
+        return "success"
+    error = getattr(result, "error", None)
+    if isinstance(error, str) and "cancelled" in error.lower():
+        return "cancelled"
+    return "error"
+
+
+def _format_inbox_record(record: object) -> str | None:
+    """One-line inbox summary for a tool/approval session record.
+
+    Returns ``None`` for record types the inbox does not surface. Rows carry a
+    compact ``MM-DD HH:MM`` timestamp prefix and read as:
+    ``tool run_command ls -la``, ``result write_file (success)``, and
+    ``approve write_file``.
+    """
+    stamp = getattr(record, "timestamp", None)
+    prefix = ""
+    if isinstance(stamp, datetime):
+        prefix = stamp.astimezone().strftime("%m-%d %H:%M") + "  "
+    payload = getattr(record, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    record_type = getattr(record, "type", None)
+    if record_type == "tool_call":
+        call = payload.get("tool_call")
+        name = getattr(call, "name", "") or ""
+        args = _inbox_compact_args(getattr(call, "arguments", None))
+        summary = f"tool {name}"
+        if args:
+            summary += f" {args}"
+        return f"{prefix}{summary}"
+    if record_type == "tool_result":
+        result = payload.get("result")
+        name = getattr(result, "tool_name", "") or ""
+        status = _inbox_result_status(result)
+        return f"{prefix}result {name} ({status})"
+    if record_type == "approval":
+        decision = str(payload.get("decision", "") or "")
+        tool = str(payload.get("tool_name", "") or "")
+        summary = f"{decision} {tool}".strip()
+        return f"{prefix}{summary}" if summary else None
+    return None
 
 
 class _RuntimeBridge:
@@ -181,9 +253,9 @@ class CodingAgentApp(App[None]):
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
     #statusline { height: 1; width: 1fr; }
-    ApprovalScreen, HelpScreen, SessionSelector, PermissionModeScreen { align: center middle; }
-    #approval, #permission-full, #permission-mode, #session-selector, #help { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #help { max-height: 80%; overflow-y: auto; }
+    ApprovalScreen, HelpScreen, HistoryScreen, SessionSelector, PermissionModeScreen { align: center middle; }
+    #approval, #permission-full, #permission-mode, #session-selector, #help, #history { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #help, #history { max-height: 80%; overflow-y: auto; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
     #approval-diff { border: round $accent; max-height: 12; overflow-y: auto; margin-bottom: 1; }
     #approval-remember-label { margin-bottom: 1; }
@@ -370,6 +442,25 @@ class CodingAgentApp(App[None]):
             return
         self.push_screen(HelpScreen())
 
+    def _inbox_rows(self) -> list[str]:
+        """Recent tool/approval summaries from ``store.records()``.
+
+        Filters to ``tool_call`` (name + compact args), ``tool_result``
+        (status), and ``approval`` (decision + tool) records, sorts them newest
+        first, and caps the list at ``_INBOX_MAX_ROWS``.
+        """
+        store = getattr(self.runtime, "store", None)
+        records = getattr(store, "records", None)
+        if records is None:
+            return []
+        rows: list[tuple[datetime, str]] = []
+        for record in records():
+            row = _format_inbox_record(record)
+            if row is not None:
+                rows.append((record.timestamp, row))
+        rows.sort(key=lambda item: item[0], reverse=True)
+        return [row for _, row in rows[:_INBOX_MAX_ROWS]]
+
     def _dispatch_command(self, name: str, args: list[str]) -> None:
         if name == "exit":
             name = "quit"
@@ -391,6 +482,11 @@ class CodingAgentApp(App[None]):
                 self._show_notice("usage: /help")
                 return
             self.action_open_help()
+        elif name == "inbox":
+            if args:
+                self._show_notice("usage: /inbox")
+                return
+            self.push_screen(HistoryScreen(self._inbox_rows()))
         elif name == "context":
             if args:
                 self._show_notice("usage: /context")
@@ -495,6 +591,7 @@ class CodingAgentApp(App[None]):
             (
                 ApprovalScreen,
                 HelpScreen,
+                HistoryScreen,
                 PermissionFullScreen,
                 PermissionModeScreen,
                 SessionSelector,
