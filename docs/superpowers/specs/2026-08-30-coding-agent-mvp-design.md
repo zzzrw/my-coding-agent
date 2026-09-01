@@ -638,6 +638,8 @@ class TranscriptItem(BaseModel):
     kind: Literal["user", "assistant", "tool", "system"]
     item_id: str
     text: str = ""
+    pending: bool = False
+    started_at: float | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_status: Literal["running", "success", "error", "cancelled"] | None = None
@@ -705,6 +707,8 @@ Required widgets:
 
 - transcript with user, assistant, tool, and system rows;
 - assistant streaming updates by message id;
+- pending assistant rows (no first token yet) render an animated
+  `thinking…` placeholder (spinner frame + elapsed seconds);
 - tool running/success/error/cancelled status;
 - approval modal;
 - `/session` selector using a modal option list;
@@ -728,6 +732,16 @@ runtime status
 
 On narrow terminals, low-priority fields are hidden instead of wrapping the
 statusline. The TUI does not require a theme system for MVP.
+
+LLM-wait indicator: `assistant_started` opens an assistant row with
+`pending=True` and a `started_at` anchor. Until the first `assistant_delta`
+arrives, that row renders an animated placeholder using the current
+`SPINNER_FRAMES` frame, the label `thinking…`, and an elapsed counter that
+increments each second, e.g. `⠹ thinking… (3s)`. The first `assistant_delta`
+clears `pending` and the placeholder is replaced by streamed text; an
+`assistant_finished` without any delta also clears it. The placeholder lives
+in the transcript row so the user sees that a reply is pending without
+watching the statusline; the statusline spinner keeps running as today.
 
 Commands are local and do not enter model history:
 
