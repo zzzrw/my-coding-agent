@@ -48,6 +48,7 @@ class ToolExecutor:
         workspace: Path,
         permission_mode: PermissionMode,
         signal: asyncio.Event,
+        output_sink=None,
     ) -> ToolResult:
         tool = self.registry.get(call.name)
         if tool is None:
@@ -101,6 +102,7 @@ class ToolExecutor:
                 workspace=workspace,
                 permission_mode=permission_mode,
                 allow_outside_once=outside_once,
+                on_output=output_sink,
             )
             result = await self._run_tool(
                 tool.execute(active_call.arguments, context=context, signal=signal),

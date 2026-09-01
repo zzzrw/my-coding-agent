@@ -37,7 +37,9 @@ class _ShellTool:
                 start_new_session=True,
             )
             started = time.monotonic()
-            collect = asyncio.create_task(self._collect_output(proc))
+            collect = asyncio.create_task(
+                self._collect_output(proc, output_sink=context.on_output)
+            )
             while not collect.done():
                 if time.monotonic() - started >= args.timeout_seconds:
                     os.killpg(proc.pid, signal_mod.SIGTERM)
@@ -84,7 +86,7 @@ class _ShellTool:
             return _result(self.schema.name, False, error=str(exc))
 
     @staticmethod
-    async def _collect_output(proc) -> tuple[bytes, bool]:
+    async def _collect_output(proc, *, output_sink=None) -> tuple[bytes, bool]:
         output = bytearray()
         truncated = False
         assert proc.stdout is not None
@@ -94,6 +96,8 @@ class _ShellTool:
                 output.extend(chunk[:remaining])
             if len(chunk) > remaining:
                 truncated = True
+            if output_sink is not None and len(chunk) <= remaining:
+                await output_sink(chunk.decode(errors="replace"))
         await proc.wait()
         return bytes(output), truncated
 

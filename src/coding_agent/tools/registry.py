@@ -1,5 +1,6 @@
 import asyncio
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -16,6 +17,7 @@ class ToolContext(BaseModel):
     workspace: Path
     permission_mode: PermissionMode
     allow_outside_once: bool = False
+    on_output: Callable[[str], Awaitable[None]] | None = None
 
 
 class Tool(Protocol):
