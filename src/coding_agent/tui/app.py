@@ -295,6 +295,7 @@ class CodingAgentApp(App[None]):
         self._shutdown_abort_started = False
         self._abort_tasks: dict[str, asyncio.Task[None]] = {}
         self._submitted_run_id: str | None = None
+        self._exit_armed: bool = False
         self._refresh_in_progress = False
         self._refresh_pending = False
         self._spinner_interval: Any | None = None
@@ -788,8 +789,11 @@ class CodingAgentApp(App[None]):
             if composer.text:
                 composer.text = ""
                 self.state = self.state.model_copy(update={"input_text": ""})
-            else:
+            if self._exit_armed:
                 self._request_shutdown()
+            else:
+                self._exit_armed = True
+                self._show_notice("Press ctrl+c again to exit", level="notice")
 
     async def _abort_run(self, run_id: str) -> None:
         task = self._abort_tasks.get(run_id)

@@ -1312,6 +1312,26 @@ async def test_idle_ctrl_c_clears_text_then_exits_on_empty_composer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_idle_ctrl_c_on_empty_composer_requires_two_presses() -> None:
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        # First ctrl+c on an empty composer arms the confirmation; no exit.
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app.is_running
+        assert app._exit_armed is True
+        assert app.state.transcript[-1].text == "Press ctrl+c again to exit"
+
+        # Second ctrl+c exits.
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+    assert not app.is_running
+
+
+@pytest.mark.asyncio
 async def test_shutdown_aborts_run_returned_by_queued_submit_before_run_started_event() -> (
     None
 ):
