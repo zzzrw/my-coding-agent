@@ -541,3 +541,57 @@ def test_history_screen_empty_state():
 
     body = history_overlay_text([])
     assert "no tool calls yet" in body.plain
+
+
+# --- Task 5: session selector live search + hint + autofocus ---
+
+
+def test_session_selector_search_filters_by_id_title_and_workspace():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    sessions = [
+        _session_summary("aaaa", "/w1", when=when),
+        _session_summary("bbbb", "/w2", when=when),
+        _session_summary("cccc", "/w1", when=when),
+    ]
+    selector = SessionSelector(sessions, workspace="/w1")
+    assert [s.id for s in selector.visible_sessions()] == ["aaaa", "cccc"]
+
+    selector._query = "aaaa"  # id search narrows the /w1 list to the matching session
+    assert [s.id for s in selector.visible_sessions()] == ["aaaa"]
+    selector._query = "bbbb"
+    assert [
+        s.id for s in selector.visible_sessions()
+    ] == []  # workspace /w1 filter still applies
+    selector.toggle_filter()  # browse all
+    assert [s.id for s in selector.visible_sessions()] == ["bbbb"]
+    selector._query = "/w2"
+    assert [s.id for s in selector.visible_sessions()] == ["bbbb"]
+
+
+def test_session_selector_search_matches_title():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    sessions = [
+        _session_summary("aaa", "/w1", when=when),
+        _session_summary("bbb", "/w1", when=when),
+    ]
+    # _session_summary builds title = "title-<id>"; override to a real title.
+    sessions[0] = sessions[0].model_copy(update={"title": "deploy api fix"})
+    selector = SessionSelector(sessions, workspace="/w1")
+    selector._query = "deploy"
+    assert [s.id for s in selector.visible_sessions()] == ["aaa"]
+
+
+@pytest.mark.asyncio
+async def test_session_selector_focuses_list_and_shows_hint():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    app = CodingAgentApp(
+        runtime=FakeRuntime(),
+        initial_state=initial_state("/tmp/project", "fake"),
+        branch_detector=lambda workspace: None,
+    )
+    async with app.run_test() as pilot:
+        app.push_screen(SessionSelector([_session_summary("a", "/w1", when=when)]))
+        await pilot.pause()
+        selector = app.screen
+        assert selector.query_one("#session-options", OptionList).has_focus
+        assert "↑↓ select" in str(selector.query_one("#session-hint").render())

@@ -269,6 +269,8 @@ class CodingAgentApp(App[None]):
     #session-options, #permission-mode-options { height: auto; max-height: 18; }
     #session-selector-title, #permission-mode-title { margin-bottom: 1; text-style: bold; }
     #session-toggle { margin: 1 0 0 0; width: auto; }
+    #session-search { margin: 0 0 1 0; }
+    #session-hint { margin-top: 1; color: $text-muted; }
     """
     BINDINGS: ClassVar = [
         Binding("ctrl+c", "interrupt", "Abort", priority=True),

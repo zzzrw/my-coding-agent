@@ -277,6 +277,7 @@ class SessionSelector(ModalScreen[str]):
         self.sessions = sessions
         self._workspace = workspace
         self._browse_all = False
+        self._query: str = ""
 
     def compose(self) -> ComposeResult:
         options = [
@@ -285,16 +286,43 @@ class SessionSelector(ModalScreen[str]):
         ]
         with Container(id="session-selector"):
             yield Static("Sessions", id="session-selector-title")
+            yield Input(placeholder="Search sessions…", id="session-search")
             yield OptionList(*options, id="session-options", markup=False)
             yield Button(self.toggle_label(), id="session-toggle")
+            yield Static(
+                "type to search · ↑↓ select · Enter switch · Esc cancel · b browse all",
+                id="session-hint",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#session-options", OptionList).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._query = event.value
+        if self.is_mounted:
+            self.query_one("#session-options", OptionList).set_options(
+                [
+                    Option(_session_text(summary), id=summary.id)
+                    for summary in self.visible_sessions()
+                ]
+            )
 
     def visible_sessions(self) -> list[SessionSummary]:
-        """Sessions shown: the current workspace unless browsing all."""
-        if self._browse_all or not self._workspace:
-            return list(self.sessions)
-        return [
-            summary for summary in self.sessions if summary.workspace == self._workspace
-        ]
+        """Sessions shown: the current workspace (unless browsing all) and
+        matching the live search query (id, title, or workspace substring)."""
+        sessions = self.sessions
+        if not self._browse_all and self._workspace:
+            sessions = [s for s in sessions if s.workspace == self._workspace]
+        query = self._query.strip().lower()
+        if query:
+            sessions = [
+                s
+                for s in sessions
+                if query in s.id.lower()
+                or query in (s.title or "").lower()
+                or query in s.workspace.lower()
+            ]
+        return sessions
 
     def toggle_label(self) -> str:
         """Footer toggle label describing the currently shown scope."""
