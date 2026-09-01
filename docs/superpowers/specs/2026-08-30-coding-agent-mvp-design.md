@@ -743,6 +743,13 @@ clears `pending` and the placeholder is replaced by streamed text; an
 in the transcript row so the user sees that a reply is pending without
 watching the statusline; the statusline spinner keeps running as today.
 
+Exit confirmation: `ctrl+c` never exits on the first press. While idle, the
+first `ctrl+c` clears any composer draft (when present) and arms an exit
+confirmation with a `Press ctrl+c again to exit` notice; a second `ctrl+c`
+performs the shutdown. Editing the composer draft, or starting a new run,
+disarms the confirmation. While a run is active, `ctrl+c` aborts it (or
+dismisses a pending approval); shutdown still waits for the abort to settle.
+
 Commands are local and do not enter model history:
 
 ```text
