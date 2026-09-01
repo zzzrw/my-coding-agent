@@ -90,10 +90,12 @@ class _RuntimeBridge:
     async def _publish_locked(self, event: RuntimeEvent) -> None:
         if self._stopped:
             return
-        if event.type == "assistant_delta":
-            message_id = event.payload.get("message_id")
-            if isinstance(message_id, str) and message_id:
-                key = (self._generation, message_id)
+        if event.type in {"assistant_delta", "tool_output_delta"}:
+            stream_id = event.payload.get("message_id") or event.payload.get(
+                "tool_call_id"
+            )
+            if isinstance(stream_id, str) and stream_id:
+                key = (self._generation, stream_id)
                 # A newer delta never enters the queue ahead of a buffered one.
                 if self._coalesced and not self.queue.full():
                     self.queue.put_nowait(self._pop_coalesced())
@@ -128,7 +130,11 @@ class _RuntimeBridge:
                 else:
                     continue
             try:
-                if event.type not in {"assistant_delta", "run_started"}:
+                if event.type not in {
+                    "assistant_delta",
+                    "tool_output_delta",
+                    "run_started",
+                }:
                     pending = [
                         key for key in self._coalesced if key[0] < self._generation
                     ]

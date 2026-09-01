@@ -4,7 +4,9 @@ Task 1 coverage: the tool output sink threaded through ``ToolContext`` ->
 ``_ShellTool`` -> ``ToolExecutor``. Task 2 coverage: ``AgentRunner`` emits
 ``tool_output_delta`` events for streamed tool output. Task 3 coverage: the
 TUI reducer accumulates deltas into the tool row and tracks run timing via
-``TuiState.run_started_at`` / ``TuiState.spinner_frame``.
+``TuiState.run_started_at`` / ``TuiState.spinner_frame``. Task 4 coverage:
+the ``_RuntimeBridge`` coalesces ``tool_output_delta`` under the
+``(generation, tool_call_id)`` key without reordering control events.
 """
 
 import asyncio
@@ -15,6 +17,7 @@ from coding_agent.runtime.models import ToolCall
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.registry import ToolContext, ToolRegistry
 from coding_agent.tools.shell import make_run_command_tool
+from coding_agent.tui.app import _RuntimeBridge
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import initial_state
 
@@ -282,3 +285,58 @@ def test_run_error_clears_timing_and_session_loaded_resets():
     )
     assert state.run_started_at is None
     assert state.spinner_frame == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 4: _RuntimeBridge coalesces tool_output_delta
+# ---------------------------------------------------------------------------
+
+
+async def test_bridge_coalesces_tool_output_delta() -> None:
+    applied: list[RuntimeEvent] = []
+
+    class FakeApp:
+        def _apply_event(self, event: RuntimeEvent) -> None:
+            applied.append(event)
+
+        def _show_error(self, message: str) -> None:
+            raise AssertionError(message)
+
+    bridge = _RuntimeBridge(FakeApp(), maxsize=1)
+    # Pre-fill the queue with a control event so the streamed deltas for the
+    # same call must be buffered rather than entering it; only then does the
+    # bridge merge them under the (generation, tool_call_id) key.
+    bridge.queue.put_nowait(
+        RuntimeEvent(
+            type="run_started",
+            run_id="r",
+            payload={"session_id": "s", "model": "test", "policy": "default"},
+        )
+    )
+    bridge.start()
+
+    await bridge.publish(_delta_event("r", "t", "c1", "ab"))
+    await bridge.publish(_delta_event("r", "t", "c1", "cd"))
+    await bridge.publish(
+        RuntimeEvent(
+            type="tool_finished",
+            run_id="r",
+            turn_id="t",
+            payload={"tool_call_id": "c1", "ok": True, "content": "abcd"},
+        )
+    )
+
+    async def wait_for_finish() -> None:
+        while not any(event.type == "tool_finished" for event in applied):
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait_for_finish(), timeout=5)
+    await bridge.stop()
+
+    delta_texts = [
+        event.payload["text"] for event in applied if event.type == "tool_output_delta"
+    ]
+    # Both streamed chunks merge into a single delta, concatenated in stream
+    # order, and the control event never overtakes them.
+    assert delta_texts == ["abcd"]
+    assert applied[-1].type == "tool_finished"
