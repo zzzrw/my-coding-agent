@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
+from coding_agent.config.config import ConfigurationError
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.llm.openai_compatible import OpenAICompatibleProvider
 from coding_agent.llm.protocol import LLMProvider
@@ -53,8 +54,8 @@ SYSTEM_PROMPT = Message(
 )
 
 
-class ConfigurationError(ValueError):
-    """Raised when required CLI configuration is absent or invalid."""
+# ``ConfigurationError`` lives in the config module and is re-exported here so
+# both callers (and tests) can import it from ``coding_agent.app``.
 
 
 class MissingConfiguration(ConfigurationError):

@@ -19,12 +19,12 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from coding_agent.config.config import config_dir
+
 Decision = Literal["allow", "deny"]
 Scope = Literal["once", "turn", "session", "always"]
 
 Signature = tuple[str, str]
-
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "coding-agent"
 
 
 def signature(tool_name: str, arguments: dict) -> Signature:
@@ -50,7 +50,7 @@ class DecisionMemory:
         """Where ``always`` decisions are persisted by default."""
         if self._explicit_always_path is not None:
             return self._explicit_always_path
-        return (self._config_dir or DEFAULT_CONFIG_DIR) / "approvals.json"
+        return (self._config_dir or config_dir()) / "approvals.json"
 
     def remember(self, sig: Signature, decision: Decision, scope: Scope) -> None:
         """Remember ``decision`` for ``sig`` under ``scope``."""
