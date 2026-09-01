@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from coding_agent.config.config import ConfigurationError
+from coding_agent.config.config import Config, ConfigurationError, load_config
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.llm.openai_compatible import OpenAICompatibleProvider
 from coding_agent.llm.protocol import LLMProvider
@@ -71,12 +71,18 @@ def _resolve_workspace(workspace: str | Path | None) -> Path:
     return path
 
 
-def _resolve_model(model: str | None) -> str:
+def _first_env(names: tuple[str, ...]) -> str | None:
+    """Return the first environment variable in ``names`` that is set."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _resolve_model(model: str | None, config: Config | None = None) -> str:
     value = (
-        model
-        or os.getenv("CODING_AGENT_MODEL")
-        or os.getenv("OPENAI_MODEL")
-        or os.getenv("DEEPSEEK_MODEL")
+        model or _first_env(ONBOARDING_MODEL_ENVS) or (config.model if config else None)
     )
     if not value:
         raise MissingConfiguration("missing model configuration")
@@ -84,7 +90,9 @@ def _resolve_model(model: str | None) -> str:
 
 
 def _resolve_api_key(
-    api_key: str | None, credential_env: str | None
+    api_key: str | None,
+    credential_env: str | None,
+    config: Config | None = None,
 ) -> tuple[str | None, str | None]:
     if api_key:
         return api_key, credential_env
@@ -94,11 +102,29 @@ def _resolve_api_key(
             value = os.getenv(name)
             if value:
                 return value, name
+    if config is not None and config.api_key:
+        return config.api_key, None
     return None, credential_env or ", ".join(DEFAULT_CREDENTIAL_ENV)
 
 
-def _resolve_context_window(context_window: int | None) -> int:
-    value = context_window if context_window is not None else DEFAULT_CONTEXT_WINDOW
+def _resolve_base_url(base_url: str | None, config: Config | None = None) -> str | None:
+    return (
+        base_url
+        or _first_env(ONBOARDING_BASE_URL_ENVS)
+        or (config.base_url if config else None)
+    )
+
+
+def _resolve_context_window(
+    context_window: int | None, config: Config | None = None
+) -> int:
+    value = context_window
+    if value is None:
+        value = (
+            config.context_window
+            if config is not None and config.context_window
+            else DEFAULT_CONTEXT_WINDOW
+        )
     if value <= 0:
         raise ConfigurationError("context window must be greater than zero")
     return value
@@ -129,27 +155,44 @@ def create_app(
     session_dir: str | Path | None = None,
     provider: LLMProvider | None = None,
     permission_mode: PermissionMode = "default",
+    config: Config | None = None,
 ) -> CodingAgentApp:
     """Build a fully wired Textual app with injectable provider support.
 
     ``provider`` is intended for deterministic tests and alternative local
     providers. The regular path constructs the OpenAI-compatible provider only
     after required configuration has been resolved.
+
+    ``config`` supplies fallback values (model, key, base URL, context window)
+    used after explicit args and environment variables. When omitted, the
+    config file is loaded lazily only if some field is otherwise unresolved, so
+    a fully environment-configured launch never touches the filesystem.
     """
     resolved_workspace = _resolve_workspace(workspace)
-    resolved_model = _resolve_model(model)
-    resolved_context_window = _resolve_context_window(context_window)
-    resolved_key, _ = _resolve_api_key(api_key, credential_env)
+
+    def _load_config() -> Config:
+        if config is not None:
+            return config
+        key_names = (credential_env,) if credential_env else DEFAULT_CREDENTIAL_ENV
+        needs_config = (
+            not (model or _first_env(ONBOARDING_MODEL_ENVS))
+            or not (api_key or _first_env(key_names))
+            or not (base_url or _first_env(ONBOARDING_BASE_URL_ENVS))
+            or context_window is None
+        )
+        if not needs_config:
+            return Config()
+        return load_config(workspace=resolved_workspace)
+
+    cfg = _load_config()
+    resolved_model = _resolve_model(model, cfg)
+    resolved_context_window = _resolve_context_window(context_window, cfg)
+    resolved_key, _ = _resolve_api_key(api_key, credential_env, cfg)
     if provider is None and not resolved_key:
         env_name = credential_env or " or ".join(DEFAULT_CREDENTIAL_ENV)
         raise MissingConfiguration(f"missing credential; set {env_name}")
 
-    resolved_base_url = (
-        base_url
-        or os.getenv("CODING_AGENT_BASE_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or os.getenv("DEEPSEEK_BASE_URL")
-    )
+    resolved_base_url = _resolve_base_url(base_url, cfg)
     llm_provider = provider or OpenAICompatibleProvider(
         api_key=resolved_key, base_url=resolved_base_url
     )
@@ -263,19 +306,40 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--context-window", type=int, help="maximum context window in tokens"
     )
+    parser.add_argument("--config", type=Path, help="path to a TOML configuration file")
     return parser
+
+
+def resolve_config(args, workspace: Path) -> Config:
+    """Resolve the effective configuration for parsed CLI ``args``.
+
+    Loads the user/workspace TOML (``args.config`` overrides the user path) and
+    overlays CLI-provided fields so explicit flags keep priority over the file.
+    """
+    config = load_config(user_path=args.config, workspace=workspace)
+    overrides: dict[str, object] = {}
+    if args.model:
+        overrides["model"] = args.model
+    if args.base_url:
+        overrides["base_url"] = args.base_url
+    if args.context_window:
+        overrides["context_window"] = args.context_window
+    return config.model_copy(update=overrides) if overrides else config
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse arguments, validate configuration, and launch the TUI."""
     args = build_parser().parse_args(argv)
     try:
+        workspace = _resolve_workspace(args.workspace)
+        config = resolve_config(args, workspace)
         application = create_app(
-            workspace=args.workspace,
+            workspace=workspace,
             model=args.model,
             base_url=args.base_url,
             session_dir=args.session_dir,
             context_window=args.context_window,
+            config=config,
         )
     except MissingConfiguration:
         return _run_onboarding()
