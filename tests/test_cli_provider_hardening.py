@@ -38,7 +38,9 @@ def _clear_env(monkeypatch, names=_ALL_ENVS):
 
 def test_default_context_window_is_exactly_one_million(tmp_path):
     assert DEFAULT_CONTEXT_WINDOW == 1_000_000
-    application = create_app(workspace=tmp_path, model="fake", provider=FakeProvider([]))
+    application = create_app(
+        workspace=tmp_path, model="fake", provider=FakeProvider([])
+    )
     assert application.runtime.store.header.context_window == 1_000_000
     assert application.runtime._runner.context_window == 1_000_000
 
@@ -57,7 +59,10 @@ def test_explicit_context_window_is_preserved_in_header_and_factory(tmp_path):
 def test_non_positive_context_window_is_rejected(tmp_path):
     with pytest.raises(ConfigurationError, match="greater than zero"):
         create_app(
-            workspace=tmp_path, model="fake", context_window=0, provider=FakeProvider([])
+            workspace=tmp_path,
+            model="fake",
+            context_window=0,
+            provider=FakeProvider([]),
         )
 
 
@@ -115,9 +120,7 @@ def test_main_launches_onboarding_when_credential_missing(tmp_path, monkeypatch)
             ran.append(self.message)
 
     monkeypatch.setattr(app_module, "ConfigurationScreen", FakeScreen)
-    assert (
-        app_module.main(["--workspace", str(tmp_path), "--model", "fake-model"]) == 0
-    )
+    assert app_module.main(["--workspace", str(tmp_path), "--model", "fake-model"]) == 0
     assert len(ran) == 1
     assert "CODING_AGENT_API_KEY" in ran[0]
 
@@ -144,7 +147,9 @@ async def test_configuration_screen_renders_guidance_without_secrets():
 
 def test_injectable_provider_bypasses_credential_requirement(tmp_path, monkeypatch):
     _clear_env(monkeypatch, _KEY_ENVS)
-    application = create_app(workspace=tmp_path, model="fake", provider=FakeProvider([]))
+    application = create_app(
+        workspace=tmp_path, model="fake", provider=FakeProvider([])
+    )
     assert application.runtime is not None
 
 

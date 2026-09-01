@@ -126,7 +126,10 @@ def test_aborted_turn_is_excluded_from_projection(tmp_path):
     )
     store.append_new(
         "assistant_message",
-        {"message": Message(role="assistant", content="partial answer"), "complete": True},
+        {
+            "message": Message(role="assistant", content="partial answer"),
+            "complete": True,
+        },
         turn_id="t1",
     )
     store.append_new("turn_end", {"reason": "aborted"}, turn_id="t1")

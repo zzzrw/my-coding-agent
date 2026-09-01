@@ -241,9 +241,9 @@ async def test_bridge_memory_is_bounded_with_unique_delta_ids() -> None:
     deltas = [event for event in target.events if event.type == "assistant_delta"]
     assert len(deltas) == 500
     # Every delta was delivered before the control event, and none was dropped.
-    assert [event.type for event in target.events] == [
-        "run_started"
-    ] + ["assistant_delta"] * 500 + ["run_finished"]
+    assert [event.type for event in target.events] == ["run_started"] + [
+        "assistant_delta"
+    ] * 500 + ["run_finished"]
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +306,7 @@ async def test_compact_rejects_prompt_and_conflicting_commands() -> None:
 
         assert runtime.submitted == []
         assert runtime.new_sessions == 0
-        assert any(
-            "compact" in row.text.lower() for row in app.state.transcript
-        )
+        assert any("compact" in row.text.lower() for row in app.state.transcript)
 
         runtime.release_compact.set()
         await pilot.pause()
@@ -346,7 +344,9 @@ async def test_compact_failure_is_visible_error_notice_and_clears_busy() -> None
 
 
 def test_local_command_boundary_is_distinct_from_user() -> None:
-    user = TranscriptRow(TranscriptItem(kind="user", item_id="u", text="/help"), index=0)
+    user = TranscriptRow(
+        TranscriptItem(kind="user", item_id="u", text="/help"), index=0
+    )
     command = TranscriptRow(
         TranscriptItem(kind="local_command", item_id="c", text="/help"), index=1
     )
@@ -385,11 +385,15 @@ def test_all_transcript_kinds_render_distinct_boundaries() -> None:
             ),
             (
                 "notice",
-                TranscriptItem(kind="system", item_id="s1", level="notice", text="same text"),
+                TranscriptItem(
+                    kind="system", item_id="s1", level="notice", text="same text"
+                ),
             ),
             (
                 "error",
-                TranscriptItem(kind="system", item_id="s2", level="error", text="same text"),
+                TranscriptItem(
+                    kind="system", item_id="s2", level="error", text="same text"
+                ),
             ),
         )
     }
@@ -500,7 +504,9 @@ def test_statusline_labels_context_estimated_explicitly() -> None:
 
 def test_context_label_after_resume_and_initial_state() -> None:
     # Initial state has no measurement: labeled configured (exact window).
-    initial = format_statusline(initial_state("/tmp/project", "fake", context_window=1000))
+    initial = format_statusline(
+        initial_state("/tmp/project", "fake", context_window=1000)
+    )
     assert "configured" in initial
 
     # Resumed state resets usage to zero and stays non-estimated.
@@ -524,7 +530,10 @@ def test_context_label_after_resume_and_initial_state() -> None:
     # A measured (estimated) update flips the label.
     measured = reduce(
         resumed,
-        event("context_updated", {"used_tokens": 42, "context_window": 1000, "estimated": True}),
+        event(
+            "context_updated",
+            {"used_tokens": 42, "context_window": 1000, "estimated": True},
+        ),
     )
     assert "estimated" in format_statusline(measured)
 

@@ -311,18 +311,14 @@ class SessionStore:
                 if item.message.role == "assistant" and any(
                     call.id in dangling for call in item.message.tool_calls
                 ):
-                    dropped_call_ids.update(
-                        call.id for call in item.message.tool_calls
-                    )
+                    dropped_call_ids.update(call.id for call in item.message.tool_calls)
             projected = [
                 item
                 for item in projected
                 if not (
                     (
                         item.message.role == "assistant"
-                        and any(
-                            call.id in dangling for call in item.message.tool_calls
-                        )
+                        and any(call.id in dangling for call in item.message.tool_calls)
                     )
                     or (
                         item.message.role == "tool"

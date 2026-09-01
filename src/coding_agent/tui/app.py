@@ -24,7 +24,9 @@ from coding_agent.tui.widgets import (
     TranscriptView,
 )
 
-_COMPACTING_CONFLICTS = frozenset({"new", "session", "resume", "compact", "permission", "clear"})
+_COMPACTING_CONFLICTS = frozenset(
+    {"new", "session", "resume", "compact", "permission", "clear"}
+)
 
 
 class _RuntimeBridge:
@@ -366,7 +368,12 @@ class CodingAgentApp(App[None]):
             return
         if isinstance(
             self.screen,
-            (ApprovalScreen, PermissionFullScreen, PermissionModeScreen, SessionSelector),
+            (
+                ApprovalScreen,
+                PermissionFullScreen,
+                PermissionModeScreen,
+                SessionSelector,
+            ),
         ):
             self.screen.dismiss(None)
         self._approval_request_id = None
