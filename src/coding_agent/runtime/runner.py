@@ -16,6 +16,76 @@ from coding_agent.tools.registry import PermissionMode, ToolRegistry
 
 EventSink = Callable[[RuntimeEvent], Awaitable[None]]
 
+_PARALLEL_SAFE_TOOLS = frozenset({"read_file", "list_files", "grep_files"})
+_MUTATION_TOOLS = frozenset({"write_file", "edit_file"})
+
+
+def call_schema_parallel_safe(name: str) -> bool:
+    """Return whether a tool's calls may run concurrently with other calls."""
+    return name in _PARALLEL_SAFE_TOOLS
+
+
+def partition_waves(
+    calls: list[ToolCall],
+    workspace: Path | None = None,
+) -> list[list[ToolCall]]:
+    """Split parsed calls into ordered waves that can run concurrently.
+
+    A call joins the current wave iff it is parallel-safe or its mutation key
+    (resolved path for ``write_file``/``edit_file``) is not already used in the
+    wave. Calls that are neither parallel-safe nor key-distinct start a new
+    wave. The flattened result preserves input call order.
+    """
+    waves: list[list[ToolCall]] = []
+    used_keys: set[str] = set()
+    base = workspace or Path.cwd()
+    for call in calls:
+        key = _mutation_key(call, base)
+        can_join = call_schema_parallel_safe(call.name) or (
+            key is not None and key not in used_keys
+        )
+        if can_join and waves and _compatible(waves[-1], call, key, base):
+            waves[-1].append(call)
+        else:
+            waves.append([call])
+            used_keys = set()
+        if key is not None:
+            used_keys.add(key)
+    return waves
+
+
+def _mutation_key(call: ToolCall, workspace: Path) -> str | None:
+    """Return the resolved-path mutation key for a call, or None when it has none."""
+    if call.name not in _MUTATION_TOOLS:
+        return None
+    path = call.arguments.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    return str(candidate.resolve())
+
+
+def _compatible(
+    wave: list[ToolCall],
+    call: ToolCall,
+    key: str | None,
+    workspace: Path,
+) -> bool:
+    """Return whether ``call`` may join ``wave`` without creating a conflict.
+
+    A parallel-safe read joins any wave. A mutating call joins only waves that
+    already hold a mutation, so a reads-only wave never absorbs a write while
+    distinct-path mutations still batch; same-path collisions are excluded by
+    ``can_join`` via ``used_keys``.
+    """
+    if call_schema_parallel_safe(call.name):
+        return True
+    return key is not None and any(
+        _mutation_key(other, workspace) is not None for other in wave
+    )
+
 
 class AgentRunner:
     def __init__(
@@ -204,19 +274,22 @@ class AgentRunner:
                 )
 
             invalid_by_id = {result.tool_call_id: result for result in invalid_results}
-            for call in parsed_calls:
-                try:
-                    self.store.append_new(
-                        "tool_call",
-                        {
-                            "tool_call": call,
-                            "source_assistant_record_id": assistant_record.id,
-                        },
-                        run_id=run_id,
-                        turn_id=turn_id,
-                    )
-                except Exception:  # noqa: BLE001 - persistence boundary normalizes errors
-                    return TurnOutcome(reason="session_error", steps=step, usage=usage)
+
+            async def _run_call(
+                call: ToolCall,
+                *,
+                assistant_record=assistant_record,
+                invalid_by_id=invalid_by_id,
+            ) -> tuple[str, ToolResult]:
+                self.store.append_new(
+                    "tool_call",
+                    {
+                        "tool_call": call,
+                        "source_assistant_record_id": assistant_record.id,
+                    },
+                    run_id=run_id,
+                    turn_id=turn_id,
+                )
                 await self._emit(
                     "tool_started",
                     run_id,
@@ -237,15 +310,12 @@ class AgentRunner:
                             run_id, turn_id, call.id
                         ),
                     )
-                try:
-                    self.store.append_new(
-                        "tool_result",
-                        {"result": result},
-                        run_id=run_id,
-                        turn_id=turn_id,
-                    )
-                except Exception:  # noqa: BLE001 - persistence boundary normalizes errors
-                    return TurnOutcome(reason="session_error", steps=step, usage=usage)
+                self.store.append_new(
+                    "tool_result",
+                    {"result": result},
+                    run_id=run_id,
+                    turn_id=turn_id,
+                )
                 await self._emit(
                     "tool_finished",
                     run_id,
@@ -257,6 +327,17 @@ class AgentRunner:
                     error=result.error,
                     metadata=result.metadata,
                 )
+                return call.id, result
+
+            for wave in partition_waves(
+                parsed_calls, workspace=Path(self.store.header.workspace)
+            ):
+                wave_results = await asyncio.gather(
+                    *(_run_call(call) for call in wave),
+                    return_exceptions=True,
+                )
+                if any(isinstance(item, Exception) for item in wave_results):
+                    return TurnOutcome(reason="session_error", steps=step, usage=usage)
         return TurnOutcome(
             reason="max_steps",
             final_text=final_text,
