@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 from pydantic import ValidationError
 
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
+from coding_agent.policy.memory import DecisionMemory, Scope, signature
 from coding_agent.runtime.hooks import HookSet
 from coding_agent.runtime.models import ToolCall
 from coding_agent.session.models import ApprovalRequest
@@ -33,12 +34,14 @@ class ToolExecutor:
         broker: ApprovalBroker,
         hooks: HookSet | None = None,
         default_timeout_seconds: float = 120.0,
+        memory: DecisionMemory | None = None,
     ) -> None:
         self.registry = registry
         self.policy = policy
         self.broker = broker
         self.hooks = hooks or HookSet()
         self.default_timeout_seconds = default_timeout_seconds
+        self.memory = memory
 
     async def execute(
         self,
@@ -49,6 +52,8 @@ class ToolExecutor:
         permission_mode: PermissionMode,
         signal: asyncio.Event,
         output_sink=None,
+        remember: Scope = "once",
+        feedback: str | None = None,
     ) -> ToolResult:
         tool = self.registry.get(call.name)
         if tool is None:
@@ -67,17 +72,26 @@ class ToolExecutor:
                 if isinstance(replacement, ToolCall):
                     active_call = replacement
 
+            sig = signature(call.name, active_call.arguments)
+            remembered = self.memory.lookup(sig) if self.memory else None
+            if remembered == "deny":
+                return self._error(
+                    call,
+                    "approval denied" + (f"; {feedback}" if feedback else ""),
+                )
+            pre_approved = remembered == "allow"
+
             decision = self.policy.decide(
                 tool.schema,
                 active_call.arguments,
                 workspace=workspace,
                 mode=permission_mode,
             )
-            if decision.kind == "deny":
+            if decision.kind == "deny" and not pre_approved:
                 return self._error(call, decision.reason)
 
             outside_once = False
-            if decision.kind == "ask":
+            if decision.kind == "ask" and not pre_approved:
                 request = ApprovalRequest(
                     request_id=uuid.uuid4().hex,
                     run_id=run_id,
@@ -89,13 +103,18 @@ class ToolExecutor:
                 )
                 answer = await self.broker.request(request)
                 if answer != "approve":
-                    return self._error(
-                        call,
-                        "approval cancelled"
-                        if answer == "cancelled"
-                        else "approval denied",
-                        cancelled=answer == "cancelled",
-                    )
+                    if answer == "cancelled":
+                        return self._error(call, "approval cancelled", cancelled=True)
+                    message = "approval denied"
+                    if request.reason:
+                        message += f": {request.reason}"
+                    if feedback:
+                        message += f"; {feedback}"
+                    if self.memory:
+                        self.memory.remember(sig, "deny", scope=remember)
+                    return self._error(call, message)
+                if self.memory:
+                    self.memory.remember(sig, "allow", scope=remember)
                 outside_once = decision.allow_outside_once
 
             context = ToolContext(
