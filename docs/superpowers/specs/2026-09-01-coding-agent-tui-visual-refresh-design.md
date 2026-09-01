@@ -72,6 +72,23 @@ A tool row renders in a Claude-style multi-line form:
   by design; keyboard row navigation is out of scope because making history
   rows focusable would steal Tab focus from the composer.
 
+### 2.5 Statusline
+
+The bottom statusline gains two focused improvements:
+
+- **Git branch detection**: the current git branch of the workspace is read at
+  app start and again whenever the workspace changes (on `session_loaded`).
+  The read runs asynchronously with a short timeout; non-git workspaces, a
+  missing `git`, or a slow repository render `branch -`.
+- **Key/value color distinction**: each `key value` field renders its key
+  dimmed and its value in the emphasized text style, so `branch main`,
+  `model deepseek-chat`, `perm default`, `session abc123`, and
+  `ctx 0/128000/128000 (configured)` are readable at a glance. The runtime
+  `status` field is colored by state (`running` cyan, `error` red, `aborted`
+  dim, `idle` default). Width truncation behaviour is unchanged: the existing
+  field-removal logic still operates on plain text lengths, and styling is
+  applied to the surviving fields last.
+
 ### 2.4 Markdown rendering
 
 Assistant rows render a lightweight styled subset of Markdown:
@@ -137,8 +154,8 @@ plain-text join so the non-children render path stays consistent.
 
 | Component | Change |
 |---|---|
-| `tui/widgets.py` | `TranscriptRow` classes + renderable support + `on_click` on tool rows; `_row_text` compact/expanded tool form; `markdown_to_text`; `_truncate_tool_output` retained for expanded bodies |
-| `tui/app.py` | CSS for `.row`, `.row.user`, `.row.tool`, `.row.local_command`; click-to-expand handler routing to state toggle |
+| `tui/widgets.py` | `TranscriptRow` classes + renderable support + `on_click` on tool rows; `_row_text` compact/expanded tool form; `markdown_to_text`; `_truncate_tool_output` retained for expanded bodies; `format_statusline` returns a styled `rich.text.Text` with dim keys and emphasized values; `detect_git_branch` helper |
+| `tui/app.py` | CSS for `.row`, `.row.user`, `.row.tool`, `.row.local_command`; click-to-expand handler routing to state toggle; async git-branch detection on mount and on `session_loaded` |
 | `tui/reducer.py` | `tool_started` stores command; `tool_finished` merges metadata, preserves command/expanded |
 | `tui/state.py` | `TranscriptItem` new optional fields |
 | `runtime/runner.py` | `tool_finished` carries `metadata` |
@@ -192,7 +209,12 @@ plain-text join so the non-children render path stays consistent.
 - Projection test: projected tool rows carry command + metadata.
 - `markdown_to_text`: bold, heading, inline code, fenced block, list render
   with the expected styles and no raw markers; malformed input does not raise.
+- Statusline: `format_statusline` returns a `Text` whose keys are dim and whose
+  values are emphasized; the `status` field is colored per state; existing
+  `in`/`len`/width-truncation tests still pass unchanged.
+- Branch detection: a git workspace populates `git_branch`; a non-git
+  workspace renders `branch -`; the value is refreshed on workspace change.
 - Final gates: `pytest -q`, `ruff check src tests`,
   `ruff format --check src tests`, `python -m coding_agent.app --help`, plus a
-  real TUI smoke confirming spacing, user card, compact tool row, and styled
-  assistant text.
+  real TUI smoke confirming spacing, user card, compact tool row, styled
+  assistant text, and a statusline with branch + colored key/value fields.

@@ -162,3 +162,64 @@ context) <noreply@anthropic.com>` trailer.
 - [ ] **Step 3: Report faithfully**
   - Summarize changed files, gate output, and the smoke result. Do not claim
     the smoke passed without observing it.
+
+---
+
+## Task 6: Detect and display the workspace git branch
+
+**Files:** `tui/widgets.py` (new `detect_git_branch`), `tui/app.py` (async
+detection on mount and on `session_loaded`), `tests/test_tui_visual_refresh.py`
+
+- [ ] **Step 1: Failing tests**
+  - `detect_git_branch(workspace)` returns the branch for a workspace inside a
+    git checkout and `None` for a non-git directory (use `tmp_path` with/without
+    a `git init`), never raising.
+  - App: after mount in a git workspace, `app.state.git_branch` is populated
+    (Pilot with a real `tmp_path` git repo or an injected detector); a non-git
+    workspace leaves it `None` and the statusline shows `branch -`.
+  - `session_loaded` with a different workspace refreshes the branch.
+- [ ] **Step 2: Run and verify failure**
+- [ ] **Step 3: Implement**
+  - `detect_git_branch(workspace) -> str | None` runs
+    `git -C <workspace> rev-parse --abbrev-ref HEAD` with a ~1s timeout and
+    returns the trimmed output or `None` on any failure.
+  - `CodingAgentApp` runs detection in an async worker at mount and again when
+    a `session_loaded` event changes the workspace, updating `git_branch` and
+    refreshing the statusline.
+- [ ] **Step 4: Run focused + full suite**
+- [ ] **Step 5: Commit**
+  - Message: `Detect and display the workspace git branch in the statusline`
+
+---
+
+## Task 7: Statusline key/value color styling
+
+**Files:** `tui/widgets.py` (`format_statusline` returns styled `Text`),
+`tests/test_tui_hardening.py`, `tests/test_tui.py`, `tests/test_tui_visual_refresh.py`
+
+- [ ] **Step 1: Failing tests**
+  - `format_statusline` returns a `rich.text.Text` whose plain text still
+    contains every existing key/value (`branch main`, `model ...`, etc.).
+  - The key span (e.g. `branch`) is dim; the value span is not dim.
+  - The `status` field is styled by state: `running` cyan, `error` red,
+    `aborted` dim, `idle` default.
+  - Existing `in`, `len`, and `width <= n` assertions keep passing unchanged.
+- [ ] **Step 2: Run and verify failure**
+- [ ] **Step 3: Implement**
+  - Refactor `format_statusline` to build each `key value` field as two styled
+    spans (key dimmed, value emphasized), keep the plain-string width/removal
+    logic, and assemble the final result as a `rich.text.Text`. The runtime
+    `status` field is colored per state.
+- [ ] **Step 4: Run focused + full suite**
+- [ ] **Step 5: Commit**
+  - Message: `Style statusline keys dim and values emphasized`
+
+---
+
+## Task 8: Final verification for the statusline work
+
+- [ ] **Step 1: Run the complete gates** (`pytest -q`, `ruff check src tests`,
+  `ruff format --check src tests`, `python -m coding_agent.app --help`).
+- [ ] **Step 2: Real TUI smoke** confirming the statusline shows the git branch
+  (or `-`) and colored key/value fields, plus no regressions in the transcript.
+- [ ] **Step 3: Report faithfully.**
