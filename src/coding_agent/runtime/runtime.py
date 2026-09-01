@@ -14,7 +14,7 @@ from coding_agent.policy.memory import Scope
 from coding_agent.runtime.events import EventSink, RuntimeEvent
 from coding_agent.runtime.models import Message, RuntimeStatus, ToolCall, TurnOutcome
 from coding_agent.runtime.runner import AgentRunner
-from coding_agent.session.models import ApprovalRequest, SessionSummary
+from coding_agent.session.models import ApprovalRequest, SessionRecord, SessionSummary
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.filesystem import _atomic_write
 from coding_agent.tools.models import ToolResult
@@ -40,6 +40,20 @@ def _projected_command(call: ToolCall | None) -> str | None:
 
 
 _SUMMARY_MAX_CHARS = 4000
+
+
+def _find_user_message_record(
+    records: list[SessionRecord], message_id: str
+) -> tuple[int, SessionRecord] | None:
+    """Locate the ``user_message`` record for ``user-<turn_id>``, or None."""
+    prefix = "user-"
+    if not message_id.startswith(prefix):
+        return None
+    turn_id = message_id[len(prefix):]
+    for index, record in enumerate(records):
+        if record.type == "user_message" and record.turn_id == turn_id:
+            return index, record
+    return None
 
 
 async def _default_summarize(
@@ -608,6 +622,69 @@ class AgentRuntime:
                         payload={"level": "warning", "message": self.store.load_notice},
                     )
                 )
+        finally:
+            self._release_operation()
+
+    async def fork_at(self, message_id: str) -> str:
+        """Fork the current session at a past user message.
+
+        Creates a new session whose persisted records end at that user
+        message, swaps the runtime onto it, and returns the prompt text so the
+        TUI can refill the composer. The original session is untouched.
+        """
+        await self._reserve_operation()
+        try:
+            found = _find_user_message_record(self.store.records(), message_id)
+            if found is None:
+                raise ValueError("message not found in session history")
+            index, record = found
+            prompt = Message.model_validate(record.payload["message"]).content or ""
+            records = self.store.records()
+            # End the fork at the selected message. If the turn is closed by an
+            # immediately following turn_end, keep it so the turn stays closed
+            # and the user message still projects into the new session history.
+            end = index + 1
+            if (
+                end < len(records)
+                and records[end].type == "turn_end"
+                and records[end].turn_id == record.turn_id
+            ):
+                end += 1
+            prefix = records[:end]
+            new_store = SessionStore.create(
+                self.store.path.parent,
+                workspace=self.store.header.workspace,
+                model=self._model,
+                context_window=self.store.header.context_window,
+                title=f"Fork of {self.store.session_id[:8]}",
+            )
+            for item in prefix:
+                new_store.append(item)
+            self.store = new_store
+            self._permission_mode = "default"
+            self._last_outcome = None
+            self._status = RuntimeStatus(
+                context_window=new_store.header.context_window
+            )
+            self._runner = self._make_runner()
+            await self._publish(
+                RuntimeEvent(
+                    type="session_loaded",
+                    payload={
+                        "session_id": self.session_id,
+                        "workspace": new_store.header.workspace,
+                        "model": new_store.header.model,
+                        "context_window": new_store.header.context_window,
+                        "history": [
+                            item.model_dump(mode="json")
+                            for item in new_store.project_messages(
+                                include_open_turn=False
+                            )
+                        ],
+                    },
+                )
+            )
+            return prompt
         finally:
             self._release_operation()
 
