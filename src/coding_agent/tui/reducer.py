@@ -221,7 +221,9 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             transcript.append(
                 TranscriptItem(
                     kind="local_command",
-                    item_id=f"command-{len(transcript)}",
+                    item_id=_next_suffixed_id(
+                        transcript, "command-", kind="local_command"
+                    ),
                     text=command,
                 )
             )
@@ -369,11 +371,28 @@ def _append_system(
     transcript.append(
         TranscriptItem(
             kind="system",
-            item_id=f"system-{len(transcript)}",
+            item_id=_next_suffixed_id(transcript, "system-", kind="system"),
             text=_text(message),
             level=level,
         )
     )
+
+
+def _next_suffixed_id(
+    transcript: list[TranscriptItem], prefix: str, *, kind: str
+) -> str:
+    """Return the next unique ``prefix<number>`` id for rows of ``kind``.
+
+    Session resets keep old local_command/system rows while rebuilding the
+    transcript, so a length-based id could collide with a retained row.
+    Counting existing ids of the same kind keeps ids unique across resets.
+    """
+    used = [
+        int(row.item_id.removeprefix(prefix))
+        for row in transcript
+        if row.kind == kind and row.item_id.startswith(prefix)
+    ]
+    return f"{prefix}{max(used, default=-1) + 1}"
 
 
 def _find_assistant(transcript: list[TranscriptItem], message_id: str) -> int | None:

@@ -654,6 +654,47 @@ def test_transcript_assistant_row_renders_styled_markdown():
     assert "code" in rendered_str
 
 
+def test_local_command_ids_stay_unique_across_session_resets():
+    """session_loaded keeps old local-command rows, so a new command must get
+    an id that does not collide with a retained one."""
+    state = initial_state("/tmp/project", "fake-model", context_window=1000)
+    state = reduce(state, RuntimeEvent(type="notice", payload={"command": "/resume"}))
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="session_loaded",
+            payload={
+                "session_id": "s1",
+                "history": [
+                    {
+                        "record_id": "rec1",
+                        "turn_id": "t1",
+                        "seq": 0,
+                        "message": {
+                            "role": "user",
+                            "content": "hi",
+                            "tool_calls": [],
+                            "tool_call_id": None,
+                            "name": None,
+                        },
+                    }
+                ],
+            },
+        ),
+    )
+    state = reduce(state, RuntimeEvent(type="notice", payload={"command": "/session"}))
+    state = reduce(
+        state,
+        RuntimeEvent(
+            type="session_loaded", payload={"session_id": "s2", "history": []}
+        ),
+    )
+    state = reduce(state, RuntimeEvent(type="notice", payload={"command": "/session"}))
+
+    ids = [row.item_id for row in state.transcript if row.kind == "local_command"]
+    assert len(ids) == len(set(ids)), ids
+
+
 @pytest.mark.parametrize("kind", ["user", "local_command"])
 def test_row_css_rules_use_kind_qualified_classes(kind):
     """Per-kind CSS rules must target the classes TranscriptRow actually sets

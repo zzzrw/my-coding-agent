@@ -147,7 +147,7 @@ class CodingAgentApp(App[None]):
     Screen { layout: vertical; }
     #transcript { height: 1fr; width: 1fr; }
     #transcript .row { margin: 0 0 1 0; width: 1fr; }
-    #transcript .row.row-user { width: 1fr; background: $primary 15%; border: round $primary; padding: 0 1; margin: 1 0 1 0; }
+    #transcript .row.row-user { width: 1fr; background: $surface; padding: 0 1; margin: 1 0 1 0; }
     #transcript .row.row-local_command { color: $text-muted; }
     #composer { height: 4; width: 1fr; }
     #composer-input { height: 4; width: 1fr; }
@@ -430,6 +430,16 @@ class CodingAgentApp(App[None]):
             )
 
     def _dispatch_resume(self, args: list[str]) -> None:
+        if not args:
+            # Bare /resume opens the same discoverable session picker as
+            # /session so a session can be chosen interactively.
+            self.run_worker(
+                self._open_session_selector(),
+                name="list-sessions",
+                group="runtime",
+                exit_on_error=False,
+            )
+            return
         if len(args) != 1 or not args[0]:
             self._show_notice("usage: /resume <id-or-unique-prefix>")
             return

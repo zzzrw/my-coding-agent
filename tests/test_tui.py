@@ -794,6 +794,24 @@ async def test_session_selector_resumes_only_selected_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bare_resume_opens_session_selector() -> None:
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+
+    async with app.run_test() as pilot:
+        composer = pilot.app.query_one("#composer-input", TextArea)
+        composer.text = "/resume"
+        await pilot.press("enter")
+        await pilot.pause()
+        options = pilot.app.screen.query_one("OptionList", OptionList)
+        options.highlighted = 1
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.resumes == ["s1-older-long-id"]
+
+
+@pytest.mark.asyncio
 async def test_resume_ambiguous_prefix_is_local_notice() -> None:
     runtime = FakeRuntime()
     runtime.sessions = [
