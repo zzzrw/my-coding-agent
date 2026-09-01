@@ -17,9 +17,10 @@ from coding_agent.runtime.models import ToolCall
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.registry import ToolContext, ToolRegistry
 from coding_agent.tools.shell import make_run_command_tool
-from coding_agent.tui.app import _RuntimeBridge
+from coding_agent.tui.app import CodingAgentApp, _RuntimeBridge
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import initial_state
+from coding_agent.tui.widgets import SPINNER_FRAMES, format_statusline
 
 
 class _NoopBroker:
@@ -340,3 +341,114 @@ async def test_bridge_coalesces_tool_output_delta() -> None:
     # order, and the control event never overtakes them.
     assert delta_texts == ["abcd"]
     assert applied[-1].type == "tool_finished"
+
+
+# ---------------------------------------------------------------------------
+# Task 5: statusline spinner + elapsed timer
+# ---------------------------------------------------------------------------
+
+
+def test_statusline_renders_spinner_frame_and_elapsed() -> None:
+    state = initial_state(".", "test", context_window=10)
+    state = state.model_copy(
+        update={"status": "running", "run_started_at": 100.0, "spinner_frame": 2}
+    )
+    text = format_statusline(state, now=105.0)
+    rendered = str(text)
+    # Frame index 2 renders its spinner glyph alongside the status and a live
+    # elapsed timer (5s from run_started_at=100 to now=105).
+    assert SPINNER_FRAMES[2] in rendered
+    assert "running" in rendered
+    assert "⏱" in rendered
+    assert "5s" in rendered
+
+
+def test_statusline_spinner_frame_wraps_around() -> None:
+    state = initial_state(".", "test")
+    state = state.model_copy(
+        update={"status": "running", "run_started_at": 100.0, "spinner_frame": 10}
+    )
+    text = format_statusline(state, now=105.0)
+    # frame index 10 wraps to index 0 of SPINNER_FRAMES.
+    assert SPINNER_FRAMES[0] in str(text)
+
+
+def test_statusline_waiting_approval_keeps_elapsed_but_pauses_spinner() -> None:
+    state = initial_state(".", "test")
+    state = state.model_copy(
+        update={
+            "status": "waiting_approval",
+            "run_started_at": 100.0,
+            "spinner_frame": 2,
+        }
+    )
+    text = format_statusline(state, now=107.0)
+    rendered = str(text)
+    # Elapsed time keeps ticking while approval is pending...
+    assert "waiting_approval" in rendered
+    assert "⏱" in rendered
+    assert "7s" in rendered
+    # ...but the animated frame at the current index is not shown (paused).
+    assert SPINNER_FRAMES[2] not in rendered
+
+
+def test_statusline_running_without_start_shows_zero_elapsed() -> None:
+    state = initial_state(".", "test")
+    state = state.model_copy(update={"status": "running", "spinner_frame": 0})
+    text = format_statusline(state, now=1.0)
+    assert "⏱0s" in str(text)
+
+
+class _FakeAppRuntime:
+    """Minimal runtime stub for app-level spinner-timer tests."""
+
+    def __init__(self) -> None:
+        self.subscribers = []
+        self.workspace = "/tmp/project"
+        self.model = "fake"
+        self.status = type("S", (), {"usage": None})()
+
+    def subscribe(self, sink):
+        self.subscribers.append(sink)
+        return lambda: None
+
+
+async def test_app_spinner_timer_advances_frame_and_stops_on_finish() -> None:
+    runtime = _FakeAppRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state("/tmp/project", "fake"),
+        branch_detector=lambda workspace: None,
+    )
+    async with app.run_test(size=(100, 24)):
+        # Idle: no spinner interval is running.
+        assert app._spinner_interval is None
+
+        app._apply_event(
+            RuntimeEvent(
+                type="run_started",
+                run_id="r",
+                turn_id="t",
+                payload={"session_id": "s", "model": "fake", "policy": "default"},
+            )
+        )
+        assert app.state.status == "running"
+        assert app.state.run_started_at is not None
+        assert app._spinner_interval is not None
+
+        # The timer callback advances the spinner frame and refreshes.
+        frame_before = app.state.spinner_frame
+        app._tick_spinner()
+        assert app.state.spinner_frame == frame_before + 1
+
+        # Finishing the run clears the elapsed anchor and stops the timer.
+        app._apply_event(
+            RuntimeEvent(
+                type="run_finished",
+                run_id="r",
+                turn_id="t",
+                payload={"outcome": {"reason": "completed"}, "steps": 1},
+            )
+        )
+        assert app.state.run_started_at is None
+        assert app._spinner_interval is None

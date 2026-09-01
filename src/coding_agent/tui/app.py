@@ -195,6 +195,7 @@ class CodingAgentApp(App[None]):
         self._submitted_run_id: str | None = None
         self._refresh_in_progress = False
         self._refresh_pending = False
+        self._spinner_interval: Any | None = None
 
     def compose(self) -> ComposeResult:
         yield TranscriptView(id="transcript")
@@ -209,6 +210,7 @@ class CodingAgentApp(App[None]):
         self._unsubscribe = self.runtime.subscribe(self._bridge.publish)
         self._bridge.start()
         await self._refresh_widgets()
+        self._sync_spinner_timer()
         self._schedule_git_branch_detection(self.state.workspace)
         self.query_one("#composer-input", SubmitTextArea).focus()
 
@@ -231,6 +233,9 @@ class CodingAgentApp(App[None]):
 
     async def on_unmount(self, event: events.Unmount) -> None:
         del event
+        if self._spinner_interval is not None:
+            self._spinner_interval.stop()
+            self._spinner_interval = None
         await self._submit_settled.wait()
         await self._settle_runtime_before_teardown()
         if self._unsubscribe is not None:
@@ -666,7 +671,34 @@ class CodingAgentApp(App[None]):
                 )
         if event.type in {"run_finished", "run_error"} and not self._shutdown_requested:
             self._submitted_run_id = None
+        self._sync_spinner_timer()
         self.call_after_refresh(self._refresh_widgets)
+
+    def _sync_spinner_timer(self) -> None:
+        """Keep the statusline animation timer in step with the run status.
+
+        Starts the interval when a run becomes active (running or waiting on
+        approval) and stops it as soon as the run leaves those states. Idempotent
+        so it is safe to call from any ``_apply_event``.
+        """
+        active = self.state.status in {"running", "waiting_approval"}
+        if active and self._spinner_interval is None and self.is_mounted:
+            self._spinner_interval = self.set_interval(
+                0.2, self._tick_spinner, name="statusline-spinner"
+            )
+        elif not active and self._spinner_interval is not None:
+            self._spinner_interval.stop()
+            self._spinner_interval = None
+
+    def _tick_spinner(self) -> None:
+        """Advance the statusline spinner frame and refresh elapsed time."""
+        self.state = self.state.model_copy(
+            update={"spinner_frame": self.state.spinner_frame + 1}
+        )
+        if self.is_mounted:
+            self.query_one("#statusline", StatusLine).render_state(
+                self.state, getattr(self.runtime, "status", None)
+            )
 
     def _dismiss_approval_screen(self) -> None:
         if self._approval_request_id is None:

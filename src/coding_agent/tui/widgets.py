@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from collections.abc import Iterable
 from datetime import datetime
 from typing import ClassVar
@@ -308,25 +309,39 @@ class ApprovalScreen(ModalScreen[str]):
         self.dismiss("approve" if event.button.id == "approve" else "deny")
 
 
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+"""Animated frames for the running statusline, advanced by the app timer."""
+
+_PAUSED_GLYPH = "⏸"
+"""Static glyph shown in place of the animated frame while approval is pending."""
+
+
 def format_statusline(
     state: TuiState,
     *,
     runtime_status: RuntimeStatus | None = None,
     usage: Usage | None = None,
     width: int | None = None,
+    now: float | None = None,
 ) -> Text:
     """Format required metadata in one line, hiding low-priority fields.
 
     Returns a styled ``rich.text.Text``: each ``key value`` field renders its
     key dimmed and its value emphasized (not dim), and the runtime ``status``
     field is colored by state (running cyan, error red, aborted dim, idle
-    default). Width truncation still operates on plain text lengths, so
-    ``len(...) <= width`` and substring checks behave as before.
+    default). While a run is active the status field also carries the spinner
+    frame (``SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]``) and a live
+    ``⏱`` elapsed timer derived from ``state.run_started_at``; ``waiting_approval``
+    keeps the elapsed timer but shows a static pause glyph instead of an
+    animated frame. ``now`` injects the monotonic reference so callers (tests)
+    can render deterministically; it defaults to ``time.monotonic()``. Width
+    truncation still operates on plain text lengths, so ``len(...) <= width``
+    and substring checks behave as before.
     """
     runtime_status = runtime_status or RuntimeStatus(status=state.status)
     usage = usage or getattr(runtime_status, "usage", None)
     used = state.context_used
-    status = state.status
+    status = _status_value(state, now)
     runtime_window = getattr(runtime_status, "context_window", None)
     window = state.context_window or runtime_window or 0
     remaining = max(0, window - used) if window else None
@@ -349,7 +364,7 @@ def format_statusline(
         ("reasoning", state.reasoning or "-"),
         ("perm", state.policy),
         ("session", _short_id(state.session_id)),
-        ("status", status, _status_style(status)),
+        ("status", status, _status_style(state.status)),
         context,
         usage_text,
     ]
@@ -389,6 +404,28 @@ def format_statusline(
     if len(result.plain) > width:
         result = result[:width]
     return result
+
+
+def _status_value(state: TuiState, now: float | None) -> str:
+    """Status field value, decorated with the spinner frame and elapsed time."""
+    if state.status == "running":
+        frame = SPINNER_FRAMES[state.spinner_frame % len(SPINNER_FRAMES)]
+        return f"{frame} running ⏱{_format_elapsed(_elapsed_seconds(state, now))}"
+    if state.status == "waiting_approval":
+        # Elapsed keeps ticking while approval is pending, but the animation
+        # pauses on a static glyph until the run resumes.
+        return (
+            f"{_PAUSED_GLYPH} waiting_approval "
+            f"⏱{_format_elapsed(_elapsed_seconds(state, now))}"
+        )
+    return state.status
+
+
+def _elapsed_seconds(state: TuiState, now: float | None) -> int:
+    if state.run_started_at is None:
+        return 0
+    reference = time.monotonic() if now is None else now
+    return max(0, int(reference - state.run_started_at))
 
 
 def _field_text(field: object) -> str:
