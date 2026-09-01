@@ -109,13 +109,15 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     elif event.type == "tool_started":
         call_id = _non_empty_str(payload.get("tool_call_id"))
         if call_id:
+            tool_name = _optional_str(payload.get("tool_name"), None)
             row = TranscriptItem(
                 kind="tool",
                 item_id=call_id,
                 tool_call_id=call_id,
-                tool_name=_optional_str(payload.get("tool_name"), None),
+                tool_name=tool_name,
                 text=_arguments_text(payload.get("arguments")),
                 tool_status="running",
+                command=_command_text(payload.get("arguments"), tool_name),
             )
             _append_or_update(transcript, row, tool_call_id=call_id)
             updates.update(active_tool_call_id=call_id, status="running")
@@ -127,6 +129,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             error = _text(payload.get("error"))
             text = _text(payload.get("content"))
             status = _tool_status(payload.get("status"), ok, error, text)
+            metadata = _metadata(payload.get("metadata"))
             index = _find_tool(transcript, call_id)
             replacement = TranscriptItem(
                 kind="tool",
@@ -135,6 +138,9 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 tool_name=_optional_str(payload.get("tool_name"), None),
                 text=text or error,
                 tool_status=status,
+                elapsed_seconds=_float_or_none(metadata.get("elapsed_seconds")),
+                truncated=_bool_or_none(metadata.get("truncated")),
+                exit_code=_int_or_none(metadata.get("exit_code")),
             )
             if index is None:
                 transcript.append(replacement)
@@ -145,6 +151,10 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                         "tool_name": replacement.tool_name or old.tool_name,
                         "text": replacement.text,
                         "tool_status": status,
+                        "command": replacement.command or old.command,
+                        "elapsed_seconds": replacement.elapsed_seconds,
+                        "truncated": replacement.truncated,
+                        "exit_code": replacement.exit_code,
                     }
                 )
             if (
@@ -269,11 +279,21 @@ def _projected_transcript(value: object) -> list[TranscriptItem]:
                         ).validate_python(raw_tool_status, strict=True)
                     except (TypeError, ValueError):
                         continue
+                command = item.get("command")
+                metadata = item.get("metadata")
+                if command is not None and not isinstance(command, str):
+                    continue
+                if metadata is not None and not isinstance(metadata, dict):
+                    continue
                 validated_item = {
-                    key: value for key, value in item.items() if key != "tool_status"
+                    key: value
+                    for key, value in item.items()
+                    if key not in ("tool_status", "command", "metadata")
                 }
             else:
                 tool_status = "success"
+                command = None
+                metadata = None
                 validated_item = item
             session_message = SessionMessage.model_validate(validated_item)
         except (TypeError, ValueError):
@@ -293,6 +313,16 @@ def _projected_transcript(value: object) -> list[TranscriptItem]:
                     tool_name=_optional_str(message.name, None),
                     text=_text(message.content),
                     tool_status=tool_status,
+                    command=command,
+                    elapsed_seconds=_float_or_none(
+                        metadata.get("elapsed_seconds") if metadata else None
+                    ),
+                    truncated=_bool_or_none(
+                        metadata.get("truncated") if metadata else None
+                    ),
+                    exit_code=_int_or_none(
+                        metadata.get("exit_code") if metadata else None
+                    ),
                 )
             )
         else:
@@ -408,6 +438,37 @@ def _arguments_text(value: object) -> str:
     if isinstance(value, str):
         return value
     return str(value)
+
+
+def _command_text(arguments: object, tool_name: str | None) -> str | None:
+    """Derive a compact tool-row command label from the call arguments."""
+    if not isinstance(arguments, dict):
+        return None
+    if tool_name == "run_command":
+        command = arguments.get("command")
+        return command if isinstance(command, str) and command.strip() else None
+    pairs = [f"{key}={value}" for key, value in arguments.items()]
+    return ", ".join(pairs) if pairs else None
+
+
+def _metadata(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _float_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _int_or_none(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _text(value: object) -> str:

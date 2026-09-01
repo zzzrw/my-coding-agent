@@ -15,6 +15,11 @@ class TranscriptItem(BaseModel):
     tool_name: str | None = None
     tool_call_id: str | None = None
     tool_status: Literal["running", "success", "error", "cancelled"] | None = None
+    command: str | None = None
+    elapsed_seconds: float | None = None
+    truncated: bool | None = None
+    exit_code: int | None = None
+    expanded: bool = False
 
 
 class TuiState(BaseModel):

@@ -252,6 +252,7 @@ class AgentRunner:
                     ok=result.ok,
                     content=result.content,
                     error=result.error,
+                    metadata=result.metadata,
                 )
         return TurnOutcome(
             reason="max_steps",
