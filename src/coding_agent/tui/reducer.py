@@ -123,9 +123,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
         if message_id is not None:
             index = _find_assistant(transcript, message_id)
             if index is None:
-                transcript.append(
-                    TranscriptItem(kind="assistant", item_id=message_id)
-                )
+                transcript.append(TranscriptItem(kind="assistant", item_id=message_id))
             else:
                 row = transcript[index]
                 if row.pending:

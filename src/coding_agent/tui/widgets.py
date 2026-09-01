@@ -35,11 +35,22 @@ class TranscriptRow(Static):
             self.item_id = item_id
             super().__init__()
 
-    def __init__(self, item: TranscriptItem, *, index: int) -> None:
+    def __init__(
+        self,
+        item: TranscriptItem,
+        *,
+        index: int,
+        spinner_frame: int = 0,
+        now: float = 0.0,
+    ) -> None:
         row_id = _row_id(item, index)
-        self._renderable: object = (
-            markdown_to_text(item.text) if item.kind == "assistant" else _row_text(item)
-        )
+        if item.kind == "assistant":
+            if item.pending and not item.text:
+                self._renderable = _pending_text(item, spinner_frame, now)
+            else:
+                self._renderable = markdown_to_text(item.text)
+        else:
+            self._renderable = _row_text(item)
         super().__init__(
             self._renderable,
             id=row_id,
@@ -77,13 +88,35 @@ class TranscriptView(VerticalScroll):
     def renderable_text(self) -> str:
         return self._rendered_text
 
-    async def render_state(self, items: Iterable[TranscriptItem]) -> None:
+    async def render_state(
+        self,
+        items: Iterable[TranscriptItem],
+        *,
+        spinner_frame: int = 0,
+        now: float = 0.0,
+    ) -> None:
         """Replace rendered rows with a state snapshot."""
         await self.remove_children()
-        rows = [TranscriptRow(item, index=index) for index, item in enumerate(items)]
-        self._rendered_text = "\n".join(_row_text(row.item) for row in rows)
+        rows = [
+            TranscriptRow(item, index=index, spinner_frame=spinner_frame, now=now)
+            for index, item in enumerate(items)
+        ]
+        self._rendered_text = "\n".join(
+            _row_text(row.item, spinner_frame=spinner_frame, now=now) for row in rows
+        )
         if rows:
             await self.mount_all(rows)
+
+    def update_pending(self, spinner_frame: int, now: float) -> None:
+        """Refresh the renderable of the pending assistant row, if any.
+
+        Called from the statusline spinner tick so the placeholder animates in
+        place without re-mounting the whole transcript.
+        """
+        for row in self.query(TranscriptRow):
+            if row.item.kind == "assistant" and row.item.pending:
+                row._renderable = _pending_text(row.item, spinner_frame, now)
+                row.refresh()
 
 
 class CommandComposer(Vertical):
@@ -927,9 +960,7 @@ def _pending_text(item: TranscriptItem, spinner_frame: int, now: float) -> str:
     return f"{frame} thinking… ({elapsed}s)"
 
 
-def _row_text(
-    item: TranscriptItem, *, spinner_frame: int = 0, now: float = 0.0
-) -> str:
+def _row_text(item: TranscriptItem, *, spinner_frame: int = 0, now: float = 0.0) -> str:
     if item.kind == "user":
         return f"> {item.text}"
     if item.kind == "local_command":

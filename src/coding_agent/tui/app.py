@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any, ClassVar
@@ -885,6 +886,9 @@ class CodingAgentApp(App[None]):
             self.query_one("#statusline", StatusLine).render_state(
                 self.state, getattr(self.runtime, "status", None)
             )
+            self.query_one("#transcript", TranscriptView).update_pending(
+                self.state.spinner_frame, time.monotonic()
+            )
 
     def _dismiss_approval_screen(self) -> None:
         if self._approval_request_id is None:
@@ -945,7 +949,11 @@ class CodingAgentApp(App[None]):
                 return
             transcript = self.query_one("#transcript", TranscriptView)
             at_end = transcript.is_vertical_scroll_end
-            await transcript.render_state(self.state.transcript)
+            await transcript.render_state(
+                self.state.transcript,
+                spinner_frame=self.state.spinner_frame,
+                now=time.monotonic(),
+            )
             if at_end:
                 transcript.scroll_end(animate=False)
             self.query_one("#statusline", StatusLine).render_state(
