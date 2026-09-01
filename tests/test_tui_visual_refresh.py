@@ -447,6 +447,10 @@ class _FakeRuntime:
         self.subscribers.append(sink)
         return lambda: None
 
+    async def emit(self, event: RuntimeEvent) -> None:
+        for sink in list(self.subscribers):
+            await sink(event)
+
     async def submit(self, prompt: str) -> str:
         return "run-1"
 
@@ -618,3 +622,128 @@ def test_transcript_assistant_row_renders_styled_markdown():
     assert "`" not in rendered_str
     assert "bold" in rendered_str
     assert "code" in rendered_str
+
+
+# ---------------------------------------------------------------------------
+# Task 5: full-pipeline smoke
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_full_pipeline_smoke_renders_visual_refresh_features():
+    """Drive the real app through a full turn and inspect the rendered rows.
+
+    This is the scripted TUI smoke: it renders the actual widgets, verifies the
+    user card, compact click-expandable tool row, styled assistant markdown and
+    an intact statusline, and asserts no DuplicateIds/error rows surface.
+    """
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(workspace="/tmp/project", model="fake"),
+    )
+
+    async with app.run_test() as pilot:
+        await runtime.emit(RuntimeEvent(type="run_started", run_id="r1", turn_id="t1"))
+        await runtime.emit(
+            RuntimeEvent(
+                type="user_message",
+                run_id="r1",
+                payload={"message_id": "u1", "text": "inspect"},
+            )
+        )
+        await runtime.emit(
+            RuntimeEvent(
+                type="assistant_started", run_id="r1", payload={"message_id": "m1"}
+            )
+        )
+        await runtime.emit(
+            RuntimeEvent(
+                type="assistant_delta",
+                run_id="r1",
+                payload={
+                    "message_id": "m1",
+                    "text": "# Heading\n\n**bold** and `code`",
+                },
+            )
+        )
+        await runtime.emit(
+            RuntimeEvent(
+                type="tool_started",
+                run_id="r1",
+                payload={
+                    "tool_call_id": "c1",
+                    "tool_name": "run_command",
+                    "arguments": {"command": "ls -la"},
+                },
+            )
+        )
+        await runtime.emit(
+            RuntimeEvent(
+                type="tool_finished",
+                run_id="r1",
+                payload={
+                    "tool_call_id": "c1",
+                    "tool_name": "run_command",
+                    "ok": False,
+                    "content": "total 8",
+                    "error": "exit code 2",
+                    "metadata": {
+                        "exit_code": 2,
+                        "elapsed_seconds": 90,
+                        "truncated": True,
+                    },
+                },
+            )
+        )
+        await runtime.emit(
+            RuntimeEvent(
+                type="run_finished",
+                run_id="r1",
+                payload={"outcome": {"reason": "completed"}},
+            )
+        )
+        await pilot.pause()
+
+        # No DuplicateIds / no runtime error rows surfaced.
+        assert app.state.status == "idle"
+        assert not any(
+            row.kind == "system" and "error" in (row.text or "").lower()
+            for row in app.state.transcript
+        )
+
+        rows = list(pilot.app.query("#transcript TranscriptRow"))
+        kinds = {row.item.kind for row in rows}
+        assert {"user", "assistant", "tool"} <= kinds
+
+        user_row = next(row for row in rows if row.item.kind == "user")
+        assert "row" in user_row.classes
+        assert "row-user" in user_row.classes
+        assert str(user_row.render()).startswith("> ")
+
+        tool_row = next(row for row in rows if row.item.kind == "tool")
+        rendered_tool = str(tool_row.render())
+        assert "✕ Bash(ls -la)" in rendered_tool
+        assert "(1m 30s)" in rendered_tool
+        assert "· truncated" in rendered_tool
+        assert "· exit 2" in rendered_tool
+
+        assistant_row = next(row for row in rows if row.item.kind == "assistant")
+        rendered_assistant = str(assistant_row.render())
+        assert "Heading" in rendered_assistant
+        assert "**" not in rendered_assistant
+        assert "`" not in rendered_assistant
+
+        # Clicking the compact tool row expands it to the full body.
+        assert tool_row.item.expanded is False
+        await pilot.click(tool_row)
+        await pilot.pause()
+        tool_item = next(
+            row for row in app.state.transcript if row.tool_call_id == "c1"
+        )
+        assert tool_item.expanded is True
+
+        # Statusline remains mounted and rendering.
+        statusline = pilot.app.query_one("#statusline")
+        assert statusline.is_mounted
+        assert "model fake" in str(statusline.render())
