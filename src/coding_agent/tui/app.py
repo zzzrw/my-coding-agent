@@ -179,6 +179,8 @@ class CodingAgentApp(App[None]):
         self._shutdown_abort_started = False
         self._abort_tasks: dict[str, asyncio.Task[None]] = {}
         self._submitted_run_id: str | None = None
+        self._refresh_in_progress = False
+        self._refresh_pending = False
 
     def compose(self) -> ComposeResult:
         yield TranscriptView(id="transcript")
@@ -644,16 +646,30 @@ class CodingAgentApp(App[None]):
             self._show_notice(str(exc), level="error")
 
     async def _refresh_widgets(self) -> None:
-        if not self.is_mounted:
+        # Serialize renders: concurrent calls used to interleave
+        # remove_children()/mount_all() on the transcript and raise
+        # DuplicateIds. If a render is already running, mark a re-run and let
+        # the running render schedule it once it finishes.
+        if self._refresh_in_progress:
+            self._refresh_pending = True
             return
-        transcript = self.query_one("#transcript", TranscriptView)
-        at_end = transcript.is_vertical_scroll_end
-        await transcript.render_state(self.state.transcript)
-        if at_end:
-            transcript.scroll_end(animate=False)
-        self.query_one("#statusline", StatusLine).render_state(
-            self.state, getattr(self.runtime, "status", None)
-        )
+        self._refresh_in_progress = True
+        self._refresh_pending = False
+        try:
+            if not self.is_mounted:
+                return
+            transcript = self.query_one("#transcript", TranscriptView)
+            at_end = transcript.is_vertical_scroll_end
+            await transcript.render_state(self.state.transcript)
+            if at_end:
+                transcript.scroll_end(animate=False)
+            self.query_one("#statusline", StatusLine).render_state(
+                self.state, getattr(self.runtime, "status", None)
+            )
+        finally:
+            self._refresh_in_progress = False
+            if self._refresh_pending:
+                self.call_after_refresh(self._refresh_widgets)
 
     def on_resize(self, event: events.Resize) -> None:
         if self.is_mounted:

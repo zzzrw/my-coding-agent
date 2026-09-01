@@ -349,6 +349,25 @@ def _format_datetime(value: datetime) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+_TOOL_MAX_LINES = 8
+_TOOL_MAX_LINE_CHARS = 200
+
+
+def _truncate_tool_output(text: str) -> str:
+    """Cap tool output to a bounded number of lines and line length."""
+    lines = text.splitlines()
+    if not lines:
+        return text
+    result: list[str] = []
+    for line in lines[:_TOOL_MAX_LINES]:
+        if len(line) > _TOOL_MAX_LINE_CHARS:
+            line = line[:_TOOL_MAX_LINE_CHARS].rstrip() + "…"
+        result.append(line)
+    if len(lines) > _TOOL_MAX_LINES:
+        result.append(f"… ({len(lines) - _TOOL_MAX_LINES} more lines)")
+    return "\n".join(result)
+
+
 def _row_text(item: TranscriptItem) -> str:
     if item.kind == "user":
         return f"> {item.text}"
@@ -359,7 +378,7 @@ def _row_text(item: TranscriptItem) -> str:
     if item.kind == "tool":
         status = item.tool_status or "pending"
         name = item.tool_name or "tool"
-        return f"[{status}] {name}: {item.text}".rstrip()
+        return f"[{status}] {name}: {_truncate_tool_output(item.text)}".rstrip()
     return f"[{item.level or 'notice'}] {item.text}"
 
 

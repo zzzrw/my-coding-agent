@@ -312,11 +312,19 @@ def _append_or_update(
     *,
     tool_call_id: str | None = None,
 ) -> None:
-    index = (
-        _find_tool(transcript, tool_call_id)
-        if tool_call_id
-        else _find_assistant(transcript, item.item_id)
-    )
+    if tool_call_id:
+        index = _find_tool(transcript, tool_call_id)
+    else:
+        # Match on kind + item_id so re-applied events (e.g. a repeated
+        # user_message) update the existing row instead of duplicating it.
+        index = next(
+            (
+                i
+                for i, row in enumerate(transcript)
+                if row.kind == item.kind and row.item_id == item.item_id
+            ),
+            None,
+        )
     if index is None:
         transcript.append(item)
     else:
