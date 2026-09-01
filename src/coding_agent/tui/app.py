@@ -191,6 +191,7 @@ class CodingAgentApp(App[None]):
     #approve, #deny, #permission-full-approve, #permission-full-cancel { width: 1fr; margin: 0 1; }
     #session-options, #permission-mode-options { height: auto; max-height: 18; }
     #session-selector-title, #permission-mode-title { margin-bottom: 1; text-style: bold; }
+    #session-toggle { margin: 1 0 0 0; width: auto; }
     """
     BINDINGS: ClassVar = [
         Binding("ctrl+c", "interrupt", "Abort", priority=True),
@@ -625,7 +626,10 @@ class CodingAgentApp(App[None]):
             if not sessions:
                 self._show_notice("no sessions found")
                 return
-            self.push_screen(SessionSelector(sessions), callback=self._session_selected)
+            self.push_screen(
+                SessionSelector(sessions, workspace=self.state.workspace),
+                callback=self._session_selected,
+            )
         except Exception as exc:  # noqa: BLE001
             self._show_notice(str(exc), level="error")
 

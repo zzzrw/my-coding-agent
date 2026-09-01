@@ -200,21 +200,73 @@ class StatusLine(Static):
 
 
 class SessionSelector(ModalScreen[str]):
-    """Session picker that returns the selected persisted session id."""
+    """Session picker that returns the selected persisted session id.
 
-    BINDINGS: ClassVar = [("escape", "cancel", "Cancel")]
+    The cached session list is filtered to the current ``workspace`` (an exact
+    ``SessionSummary.workspace`` match) unless the user toggles ``browse all``
+    via the footer button or the ``b`` binding; toggling re-filters the cached
+    list without re-listing. When ``workspace`` is ``None`` every session is
+    shown.
+    """
 
-    def __init__(self, sessions: list[SessionSummary]) -> None:
+    BINDINGS: ClassVar = [
+        ("escape", "cancel", "Cancel"),
+        ("b", "toggle_filter", "Browse all"),
+    ]
+
+    def __init__(
+        self, sessions: list[SessionSummary], workspace: str | None = None
+    ) -> None:
         super().__init__()
         self.sessions = sessions
+        self._workspace = workspace
+        self._browse_all = False
 
     def compose(self) -> ComposeResult:
         options = [
-            Option(_session_text(summary), id=summary.id) for summary in self.sessions
+            Option(_session_text(summary), id=summary.id)
+            for summary in self.visible_sessions()
         ]
         with Container(id="session-selector"):
             yield Static("Sessions", id="session-selector-title")
             yield OptionList(*options, id="session-options", markup=False)
+            yield Button(self.toggle_label(), id="session-toggle")
+
+    def visible_sessions(self) -> list[SessionSummary]:
+        """Sessions shown: the current workspace unless browsing all."""
+        if self._browse_all or not self._workspace:
+            return list(self.sessions)
+        return [
+            summary for summary in self.sessions if summary.workspace == self._workspace
+        ]
+
+    def toggle_label(self) -> str:
+        """Footer toggle label describing the currently shown scope."""
+        if self._browse_all or not self._workspace:
+            return "[browse: all]"
+        return f"[browse: {self._workspace}]"
+
+    def toggle_filter(self) -> None:
+        """Flip between the current workspace and every session."""
+        self._browse_all = not self._browse_all
+        if not self.is_mounted:
+            return
+        self.query_one("#session-options", OptionList).set_options(
+            [
+                Option(_session_text(summary), id=summary.id)
+                for summary in self.visible_sessions()
+            ]
+        )
+        toggle = self.query_one("#session-toggle", Button)
+        toggle.label = self.toggle_label()
+
+    def action_toggle_filter(self) -> None:
+        self.toggle_filter()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "session-toggle":
+            self.toggle_filter()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()

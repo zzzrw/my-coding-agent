@@ -35,7 +35,7 @@ class FakeRuntime:
         self.sessions = [
             SessionSummary(
                 id="s2-newest-long-id",
-                workspace="/workspace/new",
+                workspace="/tmp/project",
                 created_at=now - timedelta(hours=2),
                 updated_at=now,
                 title="Newest session",
@@ -43,7 +43,7 @@ class FakeRuntime:
             ),
             SessionSummary(
                 id="s1-older-long-id",
-                workspace="/workspace/old",
+                workspace="/tmp/project",
                 created_at=now - timedelta(hours=3),
                 updated_at=now - timedelta(hours=1),
                 title="Older session",
