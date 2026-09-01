@@ -36,6 +36,7 @@ class TuiState(BaseModel):
     active_tool_call_id: str | None = None
     pending_approval: ApprovalRequest | None = None
     input_text: str = ""
+    compacting: bool = False
 
 
 def initial_state(

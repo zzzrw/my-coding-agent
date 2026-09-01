@@ -17,11 +17,14 @@ from coding_agent.tui.widgets import (
     ApprovalScreen,
     CommandComposer,
     PermissionFullScreen,
+    PermissionModeScreen,
     SessionSelector,
     StatusLine,
     SubmitTextArea,
     TranscriptView,
 )
+
+_COMPACTING_CONFLICTS = frozenset({"new", "session", "resume", "compact", "permission", "clear"})
 
 
 class _RuntimeBridge:
@@ -32,6 +35,7 @@ class _RuntimeBridge:
         self.queue: asyncio.Queue[RuntimeEvent] = asyncio.Queue(maxsize=maxsize)
         self._coalesced: dict[tuple[int, str], RuntimeEvent] = {}
         self._coalesced_order: list[tuple[int, str]] = []
+        self._max_coalesced = max(maxsize, 2)
         self._generation = 0
         self._publish_lock = asyncio.Lock()
         self._wake = asyncio.Event()
@@ -90,6 +94,10 @@ class _RuntimeBridge:
                 if self._coalesced and not self.queue.full():
                     self.queue.put_nowait(self._pop_coalesced())
                 if self._coalesced or self.queue.full():
+                    # Bound the overflow buffer: flush the oldest coalesced
+                    # delta to the queue before buffering a new distinct one.
+                    if len(self._coalesced) >= self._max_coalesced:
+                        await self.queue.put(self._pop_coalesced())
                     self._buffer_delta(key, event)
                     self._wake.set()
                     return
@@ -139,12 +147,12 @@ class CodingAgentApp(App[None]):
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
     #statusline { height: 1; width: 1fr; }
-    ApprovalScreen, SessionSelector { align: center middle; }
-    #approval, #permission-full, #session-selector { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    ApprovalScreen, SessionSelector, PermissionModeScreen { align: center middle; }
+    #approval, #permission-full, #permission-mode, #session-selector { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
     #approve, #deny, #permission-full-approve, #permission-full-cancel { width: 1fr; margin: 0 1; }
-    #session-options { height: auto; max-height: 18; }
-    #session-selector-title { margin-bottom: 1; text-style: bold; }
+    #session-options, #permission-mode-options { height: auto; max-height: 18; }
+    #session-selector-title, #permission-mode-title { margin-bottom: 1; text-style: bold; }
     """
     BINDINGS: ClassVar = [Binding("ctrl+c", "interrupt", "Abort", priority=True)]
 
@@ -215,6 +223,9 @@ class CodingAgentApp(App[None]):
             )
             self._dispatch_command(command.name, command.args)
             return
+        if self.state.compacting:
+            self._show_notice("compaction in progress")
+            return
         if (
             self.state.status not in {"idle", "aborted", "error"}
             or self._submit_scheduled
@@ -250,6 +261,9 @@ class CodingAgentApp(App[None]):
             "compact",
         } and self.state.status not in {"idle", "aborted", "error"}:
             self._show_notice("A run is already active")
+            return
+        if self.state.compacting and name in _COMPACTING_CONFLICTS:
+            self._show_notice("compaction in progress")
             return
         if name not in SUPPORTED_COMMANDS:
             self._show_notice(f"unknown command: /{name}", level="error")
@@ -312,12 +326,7 @@ class CodingAgentApp(App[None]):
             if args:
                 self._show_notice("usage: /compact")
                 return
-            self.run_worker(
-                self._runtime_action("compact"),
-                name="compact",
-                group="runtime",
-                exit_on_error=False,
-            )
+            self._start_compact()
 
     def _request_shutdown(self) -> None:
         """Abort any runtime-owned turn before Textual tears down the UI."""
@@ -356,7 +365,8 @@ class CodingAgentApp(App[None]):
             self._approval_request_id = None
             return
         if isinstance(
-            self.screen, (ApprovalScreen, PermissionFullScreen, SessionSelector)
+            self.screen,
+            (ApprovalScreen, PermissionFullScreen, PermissionModeScreen, SessionSelector),
         ):
             self.screen.dismiss(None)
         self._approval_request_id = None
@@ -364,6 +374,10 @@ class CodingAgentApp(App[None]):
     def _dispatch_permission(self, args: list[str]) -> None:
         if not args:
             self._show_notice(f"permission: {self.state.policy}")
+            self.push_screen(
+                PermissionModeScreen(self.state.policy),
+                callback=self._permission_mode_decision,
+            )
             return
         if len(args) != 1 or args[0] not in {"default", "workspace", "full"}:
             self._show_notice("usage: /permission default|workspace|full")
@@ -379,6 +393,19 @@ class CodingAgentApp(App[None]):
             group="runtime",
             exit_on_error=False,
         )
+
+    def _permission_mode_decision(self, mode: str | None) -> None:
+        if mode == "full":
+            self.push_screen(
+                PermissionFullScreen(), callback=self._permission_full_decision
+            )
+        elif mode in {"default", "workspace"}:
+            self.run_worker(
+                self._set_permission(mode),
+                name="set-permission",
+                group="runtime",
+                exit_on_error=False,
+            )
 
     def _permission_full_decision(self, approved: bool | None) -> None:
         if approved:
@@ -405,6 +432,26 @@ class CodingAgentApp(App[None]):
             await getattr(self.runtime, method)()
         except Exception as exc:  # noqa: BLE001 - runtime failures are notices
             self._show_notice(str(exc), level="error")
+
+    def _start_compact(self) -> None:
+        self.state = self.state.model_copy(update={"compacting": True})
+        self._show_notice("Compacting context...")
+        self.run_worker(
+            self._compact(),
+            name="compact",
+            group="runtime",
+            exit_on_error=False,
+        )
+
+    async def _compact(self) -> None:
+        try:
+            await self.runtime.compact()
+            self._show_notice("context compacted")
+        except Exception as exc:  # noqa: BLE001 - runtime failures are notices
+            self._show_notice(str(exc), level="error")
+        finally:
+            self.state = self.state.model_copy(update={"compacting": False})
+            self.call_after_refresh(self._refresh_widgets)
 
     async def _set_permission(self, mode: str) -> None:
         try:
@@ -462,7 +509,11 @@ class CodingAgentApp(App[None]):
     def _context_notice(self) -> str:
         window = self.state.context_window
         remaining = max(0, window - self.state.context_used) if window else "?"
-        return f"context used {self.state.context_used}, remaining {remaining}, window {window or '?'}"
+        label = "estimated" if self.state.context_estimated else "configured"
+        return (
+            f"context used {self.state.context_used}, remaining {remaining}, "
+            f"window {window or '?'} ({label})"
+        )
 
     async def action_interrupt(self) -> None:
         if self._submit_scheduled:

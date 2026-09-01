@@ -12,6 +12,8 @@ from coding_agent.tui.state import TranscriptItem, TuiState
 
 def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     """Apply one runtime event without mutating the input snapshot."""
+    if _is_stale_run_event(state, event):
+        return state
     payload = event.payload
     updates: dict[str, Any] = {}
     transcript = [row.model_copy(deep=True) for row in state.transcript]
@@ -227,6 +229,18 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
     if "pending_approval" not in updates:
         updates["pending_approval"] = pending_approval
     return state.model_copy(update=updates)
+
+
+def _is_stale_run_event(state: TuiState, event: RuntimeEvent) -> bool:
+    """Reject any run-scoped event from an older run, not just terminal events.
+
+    Unscoped events (``run_id is None``), such as local notices, always pass.
+    """
+    return (
+        event.run_id is not None
+        and state.active_run_id is not None
+        and event.run_id != state.active_run_id
+    )
 
 
 def _event_matches_active_run(state: TuiState, event: RuntimeEvent) -> bool:

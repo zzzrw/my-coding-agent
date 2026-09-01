@@ -206,6 +206,39 @@ class PermissionFullScreen(ModalScreen[bool]):
         self.dismiss(event.button.id == "permission-full-approve")
 
 
+class PermissionModeScreen(ModalScreen[str]):
+    """Discoverable permission-mode selector covering default/workspace/full."""
+
+    BINDINGS: ClassVar = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        with Container(id="permission-mode"):
+            yield Static("Permission mode", id="permission-mode-title")
+            yield OptionList(
+                *[
+                    Option(
+                        f"{mode}{'  (current)' if mode == self.current else ''}",
+                        id=mode,
+                    )
+                    for mode in ("default", "workspace", "full")
+                ],
+                id="permission-mode-options",
+                markup=False,
+            )
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        if event.option.id:
+            self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ApprovalScreen(ModalScreen[str]):
     """Focused approval view; it only returns the user's decision."""
 
@@ -261,11 +294,11 @@ def format_statusline(
     remaining = max(0, window - used) if window else None
     context = ""
     if window:
-        context = f"ctx {used}/{remaining}/{window}"
-        if state.context_estimated or getattr(
+        estimated = state.context_estimated or getattr(
             runtime_status, "context_estimated", False
-        ):
-            context += "~"
+        )
+        context = f"ctx {used}/{remaining}/{window}"
+        context += " (estimated)" if estimated else " (configured)"
     usage_text = ""
     if usage is not None:
         usage_text = f"in {usage.input_tokens} out {usage.output_tokens}"
@@ -320,7 +353,7 @@ def _row_text(item: TranscriptItem) -> str:
     if item.kind == "user":
         return f"> {item.text}"
     if item.kind == "local_command":
-        return f"> {item.text}"
+        return f"$ {item.text}"
     if item.kind == "assistant":
         return item.text
     if item.kind == "tool":
