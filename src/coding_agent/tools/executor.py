@@ -108,8 +108,11 @@ class ToolExecutor:
                     message = "approval denied"
                     if request.reason:
                         message += f": {request.reason}"
-                    if feedback:
-                        message += f"; {feedback}"
+                    deny_feedback = feedback or getattr(
+                        self.broker, "last_feedback", None
+                    )
+                    if deny_feedback:
+                        message += f"; {deny_feedback}"
                     if self.memory:
                         self.memory.remember(sig, "deny", scope=remember)
                     return self._error(call, message)

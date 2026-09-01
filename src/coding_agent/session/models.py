@@ -35,6 +35,7 @@ RecordType = Literal[
     "run_start",
     "run_end",
     "error",
+    "approval",
 ]
 
 

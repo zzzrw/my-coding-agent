@@ -300,7 +300,7 @@ class SessionStore:
                         ),
                     )
                 )
-            elif record.type not in {"tool_call", "turn_start", "turn_end"}:
+            elif record.type not in {"tool_call", "approval", "turn_start", "turn_end"}:
                 active_assistant = None
         dangling = {
             call_id for call_id in pending_calls if call_id not in completed_calls

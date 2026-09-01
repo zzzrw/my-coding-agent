@@ -1,9 +1,13 @@
 import asyncio
+import json
 import os
 
+from coding_agent.app import create_app
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.policy.memory import DecisionMemory, signature
-from coding_agent.runtime.models import ToolCall
+from coding_agent.runtime.models import LLMEvent, ToolCall
+from coding_agent.runtime.runtime import _ApprovalBroker
+from coding_agent.session.models import ApprovalRequest
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.filesystem import make_write_file_tool
 from coding_agent.tools.registry import ToolRegistry
@@ -180,3 +184,116 @@ async def test_decision_recorded_on_deny(tmp_path):
         memory.lookup(signature("write_file", {"path": "a.txt", "content": "new"}))
         == "deny"
     )
+
+
+def _tool_response(call_id, name, arguments):
+    return [
+        LLMEvent(type="tool_call_start", tool_call_id=call_id, tool_name=name),
+        LLMEvent(
+            type="tool_call_delta",
+            tool_call_id=call_id,
+            arguments_delta=json.dumps(arguments),
+        ),
+        LLMEvent(type="tool_call_end", finish_reason="tool_calls"),
+    ]
+
+
+class _SequencedProvider:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    async def stream(self, messages, tools, *, model, signal):
+        self.requests.append((messages, tools, model))
+        for event in self.responses.pop(0):
+            if signal.is_set():
+                return
+            yield event
+
+
+async def test_resolve_approval_accepts_remember_and_feedback(tmp_path):
+    provider = _SequencedProvider(
+        [
+            _tool_response(
+                "write-1", "write_file", {"path": "a.txt", "content": "new\n"}
+            ),
+            [
+                LLMEvent(type="text_delta", text="ok"),
+                LLMEvent(type="response_end", finish_reason="stop"),
+            ],
+        ]
+    )
+    application = create_app(
+        workspace=tmp_path,
+        model="fake-model",
+        session_dir=tmp_path / "sessions",
+        context_window=2_000,
+        provider=provider,
+        permission_mode="default",
+    )
+    runtime = application.runtime
+    store = runtime.store
+
+    approval_requested = asyncio.Event()
+    run_finished = asyncio.Event()
+    captured = {}
+
+    async def observe(event):
+        if event.type == "approval_requested":
+            captured["request"] = event.payload["request"]
+            approval_requested.set()
+        elif event.type == "run_finished":
+            run_finished.set()
+
+    runtime.subscribe(observe)
+    await runtime.submit("write a.txt")
+    await asyncio.wait_for(approval_requested.wait(), timeout=5)
+
+    request = captured["request"]
+    await runtime.resolve_approval(
+        request.request_id, "deny", remember="turn", feedback="no"
+    )
+    await asyncio.wait_for(run_finished.wait(), timeout=5)
+
+    assert runtime.last_outcome is not None
+    assert runtime.last_outcome.reason == "completed"
+    # The deny feedback reaches the model through the tool result error.
+    tool_result = next(
+        record for record in store.records() if record.type == "tool_result"
+    )
+    error = tool_result.payload["result"].error
+    assert "approval denied" in error
+    assert "no" in error
+
+    approvals = [record for record in store.records() if record.type == "approval"]
+    assert len(approvals) == 1
+    record = approvals[0]
+    assert record.payload["request_id"] == request.request_id
+    assert record.payload["tool_name"] == "write_file"
+    assert record.payload["decision"] == "deny"
+    assert record.payload["scope"] == "turn"
+    assert record.payload["feedback"] == "no"
+    assert record.payload["tool_call_id"] == request.tool_call_id
+
+
+async def test_approval_resolved_event_carries_remember_and_feedback():
+    events = []
+
+    async def publish(event):
+        events.append(event)
+
+    broker = _ApprovalBroker(publish, lambda status: None)
+    request = ApprovalRequest(
+        request_id="a1",
+        run_id="r1",
+        tool_call_id="c1",
+        tool_name="write_file",
+        risk_level="mutate_file",
+    )
+    pending = asyncio.create_task(broker.request(request))
+    await asyncio.sleep(0)
+    await broker.resolve("a1", "deny", remember="session", feedback="relocate")
+    assert await pending == "deny"
+    resolved = next(event for event in events if event.type == "approval_resolved")
+    assert resolved.payload["remember"] == "session"
+    assert resolved.payload["feedback"] == "relocate"

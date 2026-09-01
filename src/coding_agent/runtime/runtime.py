@@ -9,6 +9,7 @@ from typing import Literal
 from coding_agent.context.policy import ContextPolicy
 from coding_agent.llm.openai_compatible import redact_secrets
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
+from coding_agent.policy.memory import Scope
 from coding_agent.runtime.events import EventSink, RuntimeEvent
 from coding_agent.runtime.models import Message, RuntimeStatus, ToolCall, TurnOutcome
 from coding_agent.runtime.runner import AgentRunner
@@ -46,6 +47,7 @@ class _ApprovalBroker:
         self._set_status = set_status
         self.pending: ApprovalRequest | None = None
         self._future: asyncio.Future[str] | None = None
+        self.last_feedback: str | None = None
 
     async def request(
         self, request: ApprovalRequest
@@ -70,8 +72,12 @@ class _ApprovalBroker:
             self._set_status("running")
 
     async def resolve(
-        self, request_id: str, decision: Literal["approve", "deny"]
-    ) -> None:
+        self,
+        request_id: str,
+        decision: Literal["approve", "deny"],
+        remember: Scope = "once",
+        feedback: str | None = None,
+    ) -> dict:
         request = self.pending
         future = self._future
         if (
@@ -85,6 +91,7 @@ class _ApprovalBroker:
         status = "approved" if decision == "approve" else "denied"
         request = request.model_copy(update={"status": status})
         self.pending = request
+        self.last_feedback = feedback
         future.set_result(decision)
         await self._publish(
             RuntimeEvent(
@@ -94,9 +101,20 @@ class _ApprovalBroker:
                     "request_id": request_id,
                     "decision": decision,
                     "status": status,
+                    "remember": remember,
+                    "feedback": feedback,
                 },
             )
         )
+        return {
+            "request_id": request_id,
+            "tool_name": request.tool_name,
+            "decision": decision,
+            "scope": remember,
+            "feedback": feedback,
+            "tool_call_id": request.tool_call_id,
+            "run_id": request.run_id,
+        }
 
     def cancel_all(self) -> None:
         future = self._future
@@ -426,9 +444,28 @@ class AgentRuntime:
         self._status = self._status.model_copy(update={"status": "aborted"})
 
     async def resolve_approval(
-        self, request_id: str, decision: Literal["approve", "deny"]
+        self,
+        request_id: str,
+        decision: Literal["approve", "deny"],
+        remember: Scope = "once",
+        feedback: str | None = None,
     ) -> None:
-        await self._broker.resolve(request_id, decision)
+        resolved = await self._broker.resolve(
+            request_id, decision, remember=remember, feedback=feedback
+        )
+        self.store.append_new(
+            "approval",
+            {
+                "request_id": resolved["request_id"],
+                "tool_name": resolved["tool_name"],
+                "decision": resolved["decision"],
+                "scope": resolved["scope"],
+                "feedback": resolved["feedback"],
+                "tool_call_id": resolved["tool_call_id"],
+            },
+            run_id=resolved.get("run_id") or self._run_id,
+            turn_id=self._turn_id,
+        )
 
     async def set_permission(self, mode: PermissionMode) -> None:
         await self._reserve_operation()
