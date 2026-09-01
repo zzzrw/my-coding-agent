@@ -711,7 +711,10 @@ Required widgets:
   `thinking…` placeholder (spinner frame + elapsed seconds);
 - tool running/success/error/cancelled status;
 - approval modal;
-- `/session` selector using a modal option list;
+- `/session` selector: a modal option list with a live search box (matching
+  session id, title, or workspace), an autofocused list so ↑/↓ + Enter work
+  without a click, and a keybinding hint (`type to search · ↑↓ select ·
+  Enter switch · Esc cancel`);
 - slash command palette shown while input starts with `/`;
 - statusline.
 
