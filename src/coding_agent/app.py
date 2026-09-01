@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Static
+from textual.widgets import Button, Input, Static
 
-from coding_agent.config.config import Config, ConfigurationError, load_config
+from coding_agent.config.config import (
+    Config,
+    ConfigurationError,
+    default_user_config_path,
+    load_config,
+    save_config,
+)
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.llm.openai_compatible import OpenAICompatibleProvider
 from coding_agent.llm.protocol import LLMProvider
@@ -265,7 +272,9 @@ def onboarding_guidance() -> str:
         "  export CODING_AGENT_API_KEY=your-key\n"
         "  coding-agent --workspace .\n"
         "\n"
-        "The API key is read from the environment only and is never stored.\n"
+        "Or run coding-agent from a terminal to launch the interactive setup\n"
+        "wizard, which writes the same settings to a local 0600 config file.\n"
+        "The API key is stored only in that file and is never printed or logged.\n"
         "Press q or Ctrl+C to exit."
     )
 
@@ -289,8 +298,94 @@ class ConfigurationScreen(App[None]):
         self.exit()
 
 
-def _run_onboarding() -> int:
-    ConfigurationScreen(onboarding_guidance()).run()
+class SetupScreen(App[None]):
+    """Interactive first-run wizard that writes the user config file.
+
+    A labeled form (model, optional base url, password-masked api key, context
+    window) with a ``Save`` button. Saving validates model and key, writes the
+    config via :func:`save_config` to :func:`default_user_config_path`, and
+    exits with ``True``. The api key input is password-masked so the key is
+    never echoed on screen; it is persisted only to the ``0600`` config file.
+    """
+
+    BINDINGS: ClassVar = [
+        Binding("q", "exit_app", "Quit", priority=True),
+        Binding("ctrl+c", "exit_app", "Quit", priority=True),
+    ]
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__()
+        self._message = message if message is not None else onboarding_guidance()
+        self._model_input = Input(placeholder="model (e.g. deepseek-chat)", id="model")
+        self._base_url_input = Input(placeholder="base url (optional)", id="base_url")
+        self._key_input = Input(placeholder="api key", id="api_key", password=True)
+        self._window_input = Input(
+            placeholder="context window (optional)", id="context_window"
+        )
+        self._save_button = Button("Save", id="save", variant="primary")
+
+    def compose(self) -> ComposeResult:
+        yield Static("coding-agent first-run setup", id="setup-title", markup=False)
+        yield Static(self._message, id="setup-guidance", markup=False)
+        yield Static("Model", id="model-label", markup=False)
+        yield self._model_input
+        yield Static("Base URL (optional)", id="base-url-label", markup=False)
+        yield self._base_url_input
+        yield Static(
+            "API key (stored locally, never echoed)", id="api-key-label", markup=False
+        )
+        yield self._key_input
+        yield Static(
+            "Context window (optional)", id="context-window-label", markup=False
+        )
+        yield self._window_input
+        yield self._save_button
+
+    def action_exit_app(self) -> None:
+        self.exit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "save":
+            self._save()
+
+    def _save(self) -> None:
+        """Validate the form, write the config file, and exit on success."""
+        model = self._model_input.value.strip()
+        api_key = self._key_input.value.strip()
+        if not model or not api_key:
+            self.notify("model and api key are required")
+            return
+        window_text = self._window_input.value.strip()
+        context_window = 0
+        if window_text:
+            try:
+                context_window = int(window_text)
+            except ValueError:
+                self.notify("context window must be an integer")
+                return
+        config = Config(
+            model=model,
+            api_key=api_key,
+            base_url=self._base_url_input.value.strip() or "",
+            context_window=context_window,
+        )
+        save_config(default_user_config_path(), config)
+        self.exit(True)
+
+
+def _run_onboarding(message: str | None = None, interactive: bool = True) -> int:
+    """Run the first-run setup wizard or fall back to the static guidance screen.
+
+    On an interactive TTY the ``SetupScreen`` form walks the user through
+    configuration and writes the config file; otherwise the static
+    ``ConfigurationScreen`` presents the credential-free guidance text.
+    """
+    message = message if message is not None else onboarding_guidance()
+    if interactive and sys.stdin.isatty():
+        SetupScreen(message).run()
+    else:
+        ConfigurationScreen(message).run()
     return 0
 
 

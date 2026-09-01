@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from textual.widgets import Static
 
 from coding_agent import app as app_module
 from coding_agent.app import (
@@ -225,3 +226,148 @@ def test_main_passes_resolved_config_to_create_app(monkeypatch, tmp_path):
     assert config.model == "m"
     assert config.api_key == "k"
     assert config.context_window == 5000
+
+
+# --- W6 Task 3: first-run SetupScreen -------------------------------------
+
+_FAKE_KEY = "sk-test-fake-key-12345"
+"""Fake placeholder API key used in tests; real keys never appear here."""
+
+
+def test_setup_screen_composes_labeled_inputs():
+    screen = app_module.SetupScreen()
+    statics = list(screen.compose())
+    rendered = "\n".join(str(w) for w in statics)
+    assert "model" in rendered.lower()
+    assert "base_url" in rendered.lower()
+    assert "api_key" in rendered.lower()
+    assert "context_window" in rendered.lower()
+
+
+def test_setup_screen_api_key_input_is_password_masked():
+    screen = app_module.SetupScreen()
+    assert screen._key_input.password is True
+    assert screen._model_input.password is False
+
+
+@pytest.mark.asyncio
+async def test_setup_save_writes_config_with_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "default_user_config_path", lambda: tmp_path / "config.toml"
+    )
+    screen = app_module.SetupScreen()
+    async with screen.run_test() as pilot:
+        screen._model_input.value = "fake-model"
+        screen._key_input.value = _FAKE_KEY
+        await pilot.pause()
+        screen._save()
+        await pilot.pause()
+    content = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "model = 'fake-model'" in content
+    assert f"api_key = '{_FAKE_KEY}'" in content  # stored per user intent
+    assert (tmp_path / "config.toml").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_setup_save_validates_model_and_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "default_user_config_path", lambda: tmp_path / "config.toml"
+    )
+    screen = app_module.SetupScreen()
+    async with screen.run_test() as pilot:
+        screen._model_input.value = "m"  # key still empty -> no save
+        await pilot.pause()
+        screen._save()
+        await pilot.pause()
+    assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.asyncio
+async def test_setup_screen_never_echoes_api_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "default_user_config_path", lambda: tmp_path / "config.toml"
+    )
+    screen = app_module.SetupScreen()
+    async with screen.run_test() as pilot:
+        screen._model_input.value = "fake-model"
+        screen._key_input.value = _FAKE_KEY
+        await pilot.pause()
+        # No Static label/guidance text may contain the key.
+        static_text = "\n".join(str(w.render()) for w in screen.query(Static))
+        assert _FAKE_KEY not in static_text
+        screen._save()
+        await pilot.pause()
+    # The key is stored in the 0600 config file (that is the point of the file).
+    assert _FAKE_KEY in (tmp_path / "config.toml").read_text(encoding="utf-8")
+
+
+def test_run_onboarding_runs_setup_screen_on_interactive_tty(monkeypatch):
+    ran = []
+
+    class FakeSetup:
+        def __init__(self, message):
+            self.message = message
+
+        def run(self):
+            ran.append(self.message)
+
+    monkeypatch.setattr(app_module, "SetupScreen", FakeSetup)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert app_module._run_onboarding("wizard-msg") == 0
+    assert ran == ["wizard-msg"]
+
+
+def test_run_onboarding_non_tty_uses_static_screen(monkeypatch):
+    ran = []
+
+    class FakeScreen:
+        def __init__(self, message):
+            self.message = message
+
+        def run(self):
+            ran.append(self.message)
+
+    monkeypatch.setattr(app_module, "ConfigurationScreen", FakeScreen)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert app_module._run_onboarding("guidance-msg") == 0
+    assert ran == ["guidance-msg"]
+
+
+def test_run_onboarding_interactive_false_never_runs_setup_screen(monkeypatch):
+    ran = []
+
+    class FakeSetup:
+        def __init__(self, message=None):
+            self.message = message
+
+        def run(self):
+            ran.append("setup")
+
+    class FakeScreen:
+        def __init__(self, message):
+            self.message = message
+
+        def run(self):
+            ran.append("static")
+
+    monkeypatch.setattr(app_module, "SetupScreen", FakeSetup)
+    monkeypatch.setattr(app_module, "ConfigurationScreen", FakeScreen)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)  # TTY but forced off
+    assert app_module._run_onboarding("msg", interactive=False) == 0
+    assert ran == ["static"]
+
+
+def test_decision_memory_always_path_defaults_to_config_dir(monkeypatch):
+    from coding_agent.policy.memory import DecisionMemory
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/xdg-config")
+    assert DecisionMemory().always_path == (
+        Path("/tmp/xdg-config") / "coding-agent" / "approvals.json"
+    )
+
+
+def test_decision_memory_always_path_explicit_override(tmp_path):
+    from coding_agent.policy.memory import DecisionMemory
+
+    path = tmp_path / "approvals.json"
+    assert DecisionMemory(always_path=path).always_path == path
