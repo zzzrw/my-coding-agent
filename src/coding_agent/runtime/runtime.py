@@ -8,6 +8,7 @@ from typing import Literal
 
 from coding_agent.context.policy import ContextPolicy
 from coding_agent.llm.openai_compatible import redact_secrets
+from coding_agent.llm.protocol import LLMProvider
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
 from coding_agent.policy.memory import Scope
 from coding_agent.runtime.events import EventSink, RuntimeEvent
@@ -36,6 +37,35 @@ def _projected_command(call: ToolCall | None) -> str | None:
         return command if isinstance(command, str) and command.strip() else None
     pairs = [f"{key}={value}" for key, value in call.arguments.items()]
     return ", ".join(pairs) if pairs else None
+
+
+_SUMMARY_MAX_CHARS = 4000
+
+
+async def _default_summarize(
+    provider: LLMProvider, messages: list[Message], *, model: str
+) -> str | None:
+    """Collect a model-generated summary via ``provider.stream`` with no tools.
+
+    Reuses the existing provider protocol unchanged; any failure or empty
+    output returns None so the caller falls back to silent truncation.
+    """
+    try:
+        stream = provider.stream(messages, [], model=model, signal=asyncio.Event())
+        parts: list[str] = []
+        async for event in stream:
+            if event.type == "text_delta" and event.text:
+                parts.append(event.text)
+            elif event.type == "error":
+                return None
+        text = "".join(parts).strip()
+        if not text:
+            return None
+        if len(text) > _SUMMARY_MAX_CHARS:
+            text = text[:_SUMMARY_MAX_CHARS]
+        return text
+    except Exception:  # noqa: BLE001 - summarization is best-effort
+        return None
 
 
 class _ApprovalBroker:
@@ -158,6 +188,7 @@ class AgentRuntime:
         system_prompt: Message,
         model: str,
         permission_mode: PermissionMode = "default",
+        summarizer: Callable[[list[Message]], Awaitable[str]] | None = None,
     ) -> None:
         self.store = store
         self._runner_factory = runner_factory
@@ -166,6 +197,7 @@ class AgentRuntime:
         self._system_prompt = system_prompt
         self._model = model
         self._permission_mode = permission_mode
+        self._summarizer = summarizer
         self._subscribers: list[EventSink] = []
         self._status = RuntimeStatus()
         self._last_outcome: TurnOutcome | None = None
@@ -621,17 +653,34 @@ class AgentRuntime:
         tokens_before = sum(
             max(1, len(item.message.content or "") // 4) for item in [*history]
         ) + max(1, len(self._system_prompt.content or "") // 4)
-        self.store.append_new(
-            "compaction",
-            {
-                "strategy": "turn_truncate",
-                "removed_turn_ids": removed,
-                "retained_turn_ids": retained,
-                "tokens_before": tokens_before,
-                "tokens_after": view.used_tokens,
-                "forced": True,
-            },
-        )
+        payload: dict = {
+            "strategy": "turn_truncate",
+            "removed_turn_ids": removed,
+            "retained_turn_ids": retained,
+            "tokens_before": tokens_before,
+            "tokens_after": view.used_tokens,
+            "forced": True,
+        }
+        if removed:
+            removed_messages = [
+                item.message for item in history if item.turn_id in removed
+            ]
+            summary = await self._summarize(removed_messages)
+            if summary:
+                payload["summary"] = summary
+        self.store.append_new("compaction", payload)
+
+    async def _summarize(self, messages: list[Message]) -> str | None:
+        """Summarize dropped messages, returning None when unavailable/failed."""
+        if self._summarizer is not None:
+            try:
+                return await self._summarizer(messages)
+            except Exception:  # noqa: BLE001 - summarization is best-effort
+                return None
+        provider = getattr(self._runner, "provider", None)
+        if provider is None:
+            return None
+        return await _default_summarize(provider, messages, model=self._model)
 
     async def undo(self) -> None:
         """Restore the most recent file mutation from the executor's journal.

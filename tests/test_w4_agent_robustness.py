@@ -15,6 +15,7 @@ from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.policy.approval import DefaultApprovalPolicy
 from coding_agent.runtime.models import LLMEvent, Message, ToolCall
 from coding_agent.runtime.runner import AgentRunner
+from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.executor import ToolExecutor, _retryable
 from coding_agent.tools.models import ToolResult, ToolSchema
@@ -278,3 +279,111 @@ async def test_loop_detection_resets_on_differing_arguments(tmp_path):
         "go", run_id="r", turn_id="t", signal=asyncio.Event()
     )
     assert outcome.reason == "max_steps"
+
+
+# --------------------------------------------------------------------------
+# Task 3: summary compression
+# --------------------------------------------------------------------------
+
+
+class _StubRunner:
+    """Minimal runner stub; ``provider`` is None unless a provider is given."""
+
+    def __init__(self, provider=None):
+        self.provider = provider
+
+
+class _SummarizingProvider:
+    """Emits a single text_delta summary when asked to summarize."""
+
+    def __init__(self, text="the generated summary"):
+        self.text = text
+        self.requests = []
+
+    async def stream(self, messages, tools, *, model, signal):
+        self.requests.append((list(messages), list(tools), model))
+        yield LLMEvent(type="text_delta", text=self.text)
+
+
+def _make_runtime(tmp_path, *, summarizer=None, runner=None):
+    store = SessionStore.create(
+        tmp_path / "sessions",
+        workspace=str(tmp_path),
+        model="fake",
+        context_window=1000,
+    )
+    store.append_new(
+        "user_message", {"message": Message(role="user", content="old")}, turn_id="old"
+    )
+    store.append_new(
+        "assistant_message",
+        {"message": Message(role="assistant", content="old answer"), "complete": True},
+        turn_id="old",
+    )
+    store.append_new(
+        "user_message", {"message": Message(role="user", content="new")}, turn_id="new"
+    )
+    stub = runner if runner is not None else _StubRunner()
+    runtime = AgentRuntime(
+        store=store,
+        runner_factory=lambda *_: stub,
+        context_policy_factory=lambda: TruncatePolicy(1000),
+        approval_policy=DefaultApprovalPolicy(),
+        system_prompt=Message(role="system", content="system"),
+        model="fake",
+        summarizer=summarizer,
+    )
+    return runtime, store
+
+
+@pytest.mark.asyncio
+async def test_compact_stores_summary_and_project_prepends(tmp_path):
+    async def summarizer(messages):
+        return "the summary"
+
+    runtime, store = _make_runtime(tmp_path, summarizer=summarizer)
+    await runtime.compact()
+    records = store.records()
+    compaction = [r for r in records if r.type == "compaction"]
+    assert compaction and compaction[-1].payload.get("summary") == "the summary"
+    messages = store.project_messages(include_open_turn=False)
+    assert messages and messages[0].message.role == "system"
+    assert "the summary" in (messages[0].message.content or "")
+    assert messages[0].turn_id is None
+    assert messages[0].record_id.startswith("summary-")
+
+
+@pytest.mark.asyncio
+async def test_compact_falls_back_without_summarizer(tmp_path):
+    # No injected summarizer and no provider on the runner -> silent truncation.
+    runtime, store = _make_runtime(tmp_path)
+    await runtime.compact()
+    compaction = [r for r in store.records() if r.type == "compaction"]
+    assert compaction and "summary" not in compaction[-1].payload
+    messages = store.project_messages()
+    assert not messages or messages[0].message.role != "system"
+
+
+@pytest.mark.asyncio
+async def test_compact_default_summarizer_uses_provider(tmp_path):
+    # No injected summarizer, but the runner exposes a provider: the default
+    # summarizer streams the dropped messages with an empty tool list.
+    provider = _SummarizingProvider("the generated summary")
+    runtime, store = _make_runtime(tmp_path, runner=_StubRunner(provider=provider))
+    await runtime.compact()
+    compaction = [r for r in store.records() if r.type == "compaction"]
+    assert compaction and (
+        compaction[-1].payload.get("summary") == "the generated summary"
+    )
+    assert provider.requests and provider.requests[0][1] == []
+
+
+@pytest.mark.asyncio
+async def test_compact_omits_summary_when_summarizer_fails(tmp_path):
+    async def failing_summarizer(messages):
+        raise RuntimeError("summarization failed")
+
+    runtime, store = _make_runtime(tmp_path, summarizer=failing_summarizer)
+    await runtime.compact()
+    compaction = [r for r in store.records() if r.type == "compaction"]
+    assert compaction and "summary" not in compaction[-1].payload

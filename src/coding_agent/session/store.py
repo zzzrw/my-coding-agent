@@ -326,6 +326,30 @@ class SessionStore:
                     )
                 )
             ]
+        summary_record = next(
+            (
+                record
+                for record in reversed(self._records)
+                if record.type == "compaction" and record.payload.get("summary")
+            ),
+            None,
+        )
+        if summary_record is not None:
+            projected.insert(
+                0,
+                SessionMessage(
+                    record_id=f"summary-{summary_record.seq}",
+                    turn_id=None,
+                    seq=summary_record.seq,
+                    message=Message(
+                        role="system",
+                        content=(
+                            "Summary of earlier conversation: "
+                            f"{summary_record.payload['summary']}"
+                        ),
+                    ),
+                ),
+            )
         return projected
 
     @classmethod
