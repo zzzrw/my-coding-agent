@@ -23,7 +23,7 @@ from coding_agent.tools.registry import ToolRegistry
 from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import TranscriptItem, TuiState, initial_state
-from coding_agent.tui.widgets import TranscriptRow, _row_text
+from coding_agent.tui.widgets import TranscriptRow, _row_text, markdown_to_text
 
 
 class ScriptedProvider:
@@ -525,3 +525,96 @@ async def test_clicking_non_tool_row_does_not_toggle():
         await pilot.pause()
 
         assert app.state.transcript[0].expanded is False
+
+
+# ---------------------------------------------------------------------------
+# Task 4: lightweight markdown rendering for assistant rows
+# ---------------------------------------------------------------------------
+
+
+def _span_for(text, needle):
+    """Return the resolved Rich style covering ``needle`` in ``text``."""
+    from rich.style import Style
+
+    span = next(
+        span for span in text.spans if needle in text.plain[span.start : span.end]
+    )
+    return span.style if isinstance(span.style, Style) else Style.parse(span.style)
+
+
+def test_markdown_bold_renders_bold_without_markers():
+    text = markdown_to_text("a **bold** tail")
+
+    assert "bold" in text.plain
+    assert "**" not in text.plain
+    assert _span_for(text, "bold").bold
+
+
+def test_markdown_heading_strips_marker_and_styles_bold_color():
+    text = markdown_to_text("# Heading")
+
+    assert text.plain == "Heading"
+    span = _span_for(text, "Heading")
+    assert span.bold
+    assert span.color is not None
+
+
+def test_markdown_inline_code_gets_distinct_style():
+    text = markdown_to_text("run `pytest -q` now")
+
+    assert "pytest -q" in text.plain
+    span = _span_for(text, "pytest -q")
+    assert span.reverse or span.bgcolor is not None
+
+
+def test_markdown_fenced_code_is_indented_dimmed_and_fenceless():
+    text = markdown_to_text("```python\nprint(1)\nprint(2)\n```")
+
+    assert "print(1)" in text.plain
+    assert "```" not in text.plain
+    assert _span_for(text, "print(1)").dim
+    line = next(line for line in text.plain.splitlines() if "print(1)" in line)
+    assert line.startswith("  ")
+
+
+def test_markdown_list_uses_bullet_without_dash():
+    text = markdown_to_text("- item")
+
+    assert text.plain == "• item"
+    assert not text.plain.startswith("-")
+
+
+def test_markdown_link_keeps_text_and_dimmed_url():
+    text = markdown_to_text("see [docs](https://example.com)")
+
+    assert "docs" in text.plain
+    assert "https://example.com" in text.plain
+    assert _span_for(text, "https://example.com").dim
+
+
+def test_markdown_malformed_input_does_not_raise():
+    text = markdown_to_text("**unbalanced and *stray")
+
+    assert "**unbalanced and *stray" in text.plain
+
+
+def test_markdown_italic_variants_render_italic():
+    text = markdown_to_text("*one* _two_")
+
+    assert _span_for(text, "one").italic
+    assert _span_for(text, "two").italic
+
+
+def test_transcript_assistant_row_renders_styled_markdown():
+    from rich.text import Text
+
+    item = TranscriptItem(kind="assistant", item_id="m1", text="**bold** and `code`")
+    row = TranscriptRow(item, index=0)
+    renderable = row.render()
+
+    assert isinstance(renderable, Text)
+    rendered_str = str(renderable)
+    assert "**" not in rendered_str
+    assert "`" not in rendered_str
+    assert "bold" in rendered_str
+    assert "code" in rendered_str

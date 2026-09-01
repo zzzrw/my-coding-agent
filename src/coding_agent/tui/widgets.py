@@ -32,13 +32,21 @@ class TranscriptRow(Static):
 
     def __init__(self, item: TranscriptItem, *, index: int) -> None:
         row_id = _row_id(item, index)
+        self._renderable: object = (
+            markdown_to_text(item.text) if item.kind == "assistant" else _row_text(item)
+        )
         super().__init__(
-            _row_text(item),
+            self._renderable,
             id=row_id,
             markup=False,
             classes=f"row row-{item.kind}",
         )
         self.item = item
+
+    def render(self) -> object:
+        # Return the raw renderable so tests can inspect it without an active
+        # App; Textual still visualizes it with markup disabled in _render().
+        return self._renderable
 
     def on_click(self, event: events.Click) -> None:
         if self.item.kind == "tool":
@@ -460,6 +468,110 @@ def _tool_row_text(item: TranscriptItem) -> str:
     if footer is not None:
         lines.append(footer)
     return "\n".join(lines)
+
+
+def _append_inline(text: Text, line: str) -> None:
+    """Append one line to ``text``, styling inline markdown tokens."""
+    i = 0
+    n = len(line)
+    buf_start = 0
+    while i < n:
+        if line.startswith("**", i):
+            end = line.find("**", i + 2)
+            if end != -1:
+                if i > buf_start:
+                    text.append(line[buf_start:i])
+                text.append(line[i + 2 : end], style="bold")
+                i = end + 2
+                buf_start = i
+                continue
+            # Unbalanced opener renders literally so malformed input never
+            # swallows visible text.
+            text.append(line[i : i + 2])
+            i += 2
+            buf_start = i
+            continue
+        if line[i] == "`":
+            end = line.find("`", i + 1)
+            if end != -1:
+                if i > buf_start:
+                    text.append(line[buf_start:i])
+                text.append(line[i + 1 : end], style="reverse")
+                i = end + 1
+                buf_start = i
+                continue
+        if line[i] == "[":
+            end = line.find("]", i + 1)
+            if end != -1 and end + 1 < n and line[end + 1] == "(":
+                url_end = line.find(")", end + 2)
+                if url_end != -1:
+                    if i > buf_start:
+                        text.append(line[buf_start:i])
+                    text.append(line[i + 1 : end])
+                    text.append(f" ({line[end + 2 : url_end]})", style="dim")
+                    i = url_end + 1
+                    buf_start = i
+                    continue
+        if line[i] == "*":
+            end = line.find("*", i + 1)
+            if end != -1:
+                if i > buf_start:
+                    text.append(line[buf_start:i])
+                text.append(line[i + 1 : end], style="italic")
+                i = end + 1
+                buf_start = i
+                continue
+        if line[i] == "_":
+            end = line.find("_", i + 1)
+            if end != -1:
+                if i > buf_start:
+                    text.append(line[buf_start:i])
+                text.append(line[i + 1 : end], style="italic")
+                i = end + 1
+                buf_start = i
+                continue
+        i += 1
+    if buf_start < n:
+        text.append(line[buf_start:])
+
+
+def markdown_to_text(text: str) -> Text:
+    """Convert a lightweight markdown subset into a styled Rich Text.
+
+    Supports ATX headings, bold/italic/code, fenced code blocks, list prefixes
+    and links. Malformed input never raises and falls back to literal text.
+    """
+    result = Text()
+    lines = text.splitlines()
+    in_fence = False
+    first = True
+    for line in lines:
+        if not first:
+            result.append("\n")
+        first = False
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            result.append("  " + line, style="dim")
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if heading:
+            result.append(heading.group(2), style="bold bright_cyan")
+            continue
+        bullet = re.match(r"^(\s*)[-*+]\s+(.*)$", line)
+        if bullet:
+            result.append(bullet.group(1) + "• ")
+            _append_inline(result, bullet.group(2))
+            continue
+        numbered = re.match(r"^(\s*)(\d+)[.)]\s+(.*)$", line)
+        if numbered:
+            result.append(numbered.group(1) + numbered.group(2) + ". ")
+            _append_inline(result, numbered.group(3))
+            continue
+        _append_inline(result, line)
+    return result
 
 
 def _row_text(item: TranscriptItem) -> str:
