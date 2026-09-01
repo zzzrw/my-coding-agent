@@ -909,6 +909,16 @@ def _statusline_text(pilot):
     return str(pilot.app.query_one("#statusline").render())
 
 
+def _content_dim(content, needle):
+    """True if any rendered span covering ``needle`` is dim."""
+    start = content.plain.index(needle)
+    end = start + len(needle)
+    return any(
+        span.start < end and span.end > start and getattr(span.style, "dim", False)
+        for span in content.spans
+    )
+
+
 @pytest.mark.asyncio
 async def test_app_populates_git_branch_on_mount():
     runtime = _FakeRuntime()
@@ -957,3 +967,21 @@ async def test_session_loaded_with_new_workspace_refreshes_git_branch():
         )
         await _wait_for(lambda: app.state.git_branch == "branchb")
         await _wait_for(lambda: "branch branchb" in _statusline_text(pilot))
+
+
+@pytest.mark.asyncio
+async def test_statusline_renders_styled_branch_key():
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(workspace="/tmp/project", model="fake"),
+        branch_detector=lambda workspace: "main",
+    )
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _wait_for(lambda: "branch main" in _statusline_text(pilot))
+        renderable = pilot.app.query_one("#statusline").render()
+
+        assert "branch main" in renderable.plain
+        assert _content_dim(renderable, "branch")
+        assert not _content_dim(renderable, "main")

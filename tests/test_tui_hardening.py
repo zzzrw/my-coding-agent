@@ -548,3 +548,89 @@ def test_statusline_fits_80_columns() -> None:
         session_id="a-very-long-session-identifier",
     )
     assert len(format_statusline(state, width=80)) <= 80
+
+
+# ---------------------------------------------------------------------------
+# (7) statusline key/value color styling
+# ---------------------------------------------------------------------------
+
+
+def _style_for(text: object, needle: str):
+    """Return the effective Rich style covering ``needle`` in ``text``.
+
+    Overlapping spans are merged so a needle touched by more than one span
+    reports the combined style.
+    """
+    from rich.style import Style
+
+    start = text.plain.index(needle)
+    end = start + len(needle)
+    style = Style()
+    for span in text.spans:
+        if span.start < end and span.end > start:
+            span_style = (
+                span.style if isinstance(span.style, Style) else Style.parse(span.style)
+            )
+            style += span_style
+    return style
+
+
+def test_statusline_returns_rich_text_with_all_key_value_fields() -> None:
+    from rich.text import Text
+
+    state = make_state(git_branch="main", model="deepseek-chat", session_id="abc12345")
+    text = format_statusline(state)
+
+    assert isinstance(text, Text)
+    for needle in (
+        "branch main",
+        "model deepseek-chat",
+        "perm default",
+        "session abc12345",
+    ):
+        assert needle in text
+
+
+def test_statusline_keys_are_dim_and_values_are_not_dim() -> None:
+    state = make_state(git_branch="main", model="deepseek-chat", session_id="abc12345")
+
+    text = format_statusline(state)
+    assert _style_for(text, "branch").dim
+    assert not _style_for(text, "main").dim
+    assert _style_for(text, "model").dim
+    assert not _style_for(text, "deepseek-chat").dim
+    assert _style_for(text, "perm").dim
+    assert not _style_for(text, "default").dim
+    assert _style_for(text, "session").dim
+    assert not _style_for(text, "abc12345").dim
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_color"),
+    [
+        ("running", "cyan"),
+        ("error", "red"),
+    ],
+)
+def test_statusline_status_field_colored_by_state(
+    status: str, expected_color: str
+) -> None:
+    text = format_statusline(make_state(status=status))
+
+    style = _style_for(text, status)
+    assert style.color is not None
+    assert style.color.name == expected_color
+
+
+def test_statusline_aborted_status_is_dim() -> None:
+    text = format_statusline(make_state(status="aborted"))
+
+    assert _style_for(text, "aborted").dim
+
+
+def test_statusline_idle_status_has_default_style() -> None:
+    text = format_statusline(make_state(status="idle"))
+
+    style = _style_for(text, "idle")
+    assert not style.dim
+    assert style.color is None

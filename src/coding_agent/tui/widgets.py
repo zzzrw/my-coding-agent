@@ -314,8 +314,15 @@ def format_statusline(
     runtime_status: RuntimeStatus | None = None,
     usage: Usage | None = None,
     width: int | None = None,
-) -> str:
-    """Format required metadata in one line, hiding low-priority fields."""
+) -> Text:
+    """Format required metadata in one line, hiding low-priority fields.
+
+    Returns a styled ``rich.text.Text``: each ``key value`` field renders its
+    key dimmed and its value emphasized (not dim), and the runtime ``status``
+    field is colored by state (running cyan, error red, aborted dim, idle
+    default). Width truncation still operates on plain text lengths, so
+    ``len(...) <= width`` and substring checks behave as before.
+    """
     runtime_status = runtime_status or RuntimeStatus(status=state.status)
     usage = usage or getattr(runtime_status, "usage", None)
     used = state.context_used
@@ -323,50 +330,101 @@ def format_statusline(
     runtime_window = getattr(runtime_status, "context_window", None)
     window = state.context_window or runtime_window or 0
     remaining = max(0, window - used) if window else None
-    context = ""
+    context: tuple[str, str] | str = ""
     if window:
         estimated = state.context_estimated or getattr(
             runtime_status, "context_estimated", False
         )
-        context = f"ctx {used}/{remaining}/{window}"
-        context += " (estimated)" if estimated else " (configured)"
+        ctx_value = f"{used}/{remaining}/{window}"
+        ctx_value += " (estimated)" if estimated else " (configured)"
+        context = ("ctx", ctx_value)
     usage_text = ""
     if usage is not None:
         usage_text = f"in {usage.input_tokens} out {usage.output_tokens}"
-    fields = [
+    branch = state.git_branch or "-"
+    fields: list[object] = [
         state.workspace,
-        f"branch {state.git_branch or '-'}",
-        f"model {state.model}",
-        f"reasoning {state.reasoning or '-'}",
-        f"perm {state.policy}",
-        f"session {_short_id(state.session_id)}",
-        status,
+        ("branch", branch),
+        ("model", state.model),
+        ("reasoning", state.reasoning or "-"),
+        ("perm", state.policy),
+        ("session", _short_id(state.session_id)),
+        ("status", status, _status_style(status)),
         context,
         usage_text,
     ]
-    fields = [field for field in fields if field]
+    fields = [field for field in fields if _field_text(field)]
     if width is None:
-        return "  ".join(fields)
+        return _statusline_text(fields)
     if width <= 0:
-        return ""
+        return Text("")
     # Preserve identity and lifecycle fields first; progressively hide details.
-    while fields and len("  ".join(fields)) > width:
+    while fields and len("  ".join(_field_text(field) for field in fields)) > width:
         removable = (
             usage_text,
-            context,
+            _field_text(context),
             f"reasoning {state.reasoning or '-'}",
-            f"branch {state.git_branch or '-'}",
+            f"branch {branch}",
             state.workspace,
             f"session {_short_id(state.session_id)}",
             f"model {state.model}",
         )
         for candidate in removable:
-            if candidate and candidate in fields:
-                fields.remove(candidate)
+            if not candidate:
+                continue
+            index = next(
+                (
+                    i
+                    for i, field in enumerate(fields)
+                    if _field_text(field) == candidate
+                ),
+                None,
+            )
+            if index is not None:
+                fields.pop(index)
                 break
         else:
             break
-    return "  ".join(fields)[:width]
+    result = _statusline_text(fields)
+    if len(result.plain) > width:
+        result = result[:width]
+    return result
+
+
+def _field_text(field: object) -> str:
+    """Plain text of a statusline field for width/removal logic."""
+    if isinstance(field, tuple):
+        if field[0] == "status":
+            return field[1]
+        return f"{field[0]} {field[1]}"
+    return str(field)
+
+
+def _status_style(status: str) -> str | None:
+    if status == "running":
+        return "cyan"
+    if status == "error":
+        return "red"
+    if status == "aborted":
+        return "dim"
+    return None
+
+
+def _statusline_text(fields: list[object]) -> Text:
+    """Assemble the styled statusline Text from the surviving fields."""
+    result = Text()
+    for index, field in enumerate(fields):
+        if index:
+            result.append("  ")
+        if isinstance(field, tuple) and field[0] == "status":
+            result.append(field[1], style=field[2])
+        elif isinstance(field, tuple):
+            result.append(field[0], style="dim")
+            result.append(" ")
+            result.append(field[1])
+        else:
+            result.append(field)
+    return result
 
 
 def _session_text(summary: SessionSummary) -> str:
