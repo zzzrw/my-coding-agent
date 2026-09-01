@@ -6,6 +6,11 @@ import argparse
 import os
 from collections.abc import Sequence
 from pathlib import Path
+from typing import ClassVar
+
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import Static
 
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.llm.openai_compatible import OpenAICompatibleProvider
@@ -27,9 +32,15 @@ from coding_agent.tools.shell import make_run_command_tool
 from coding_agent.tui.app import CodingAgentApp
 
 DEFAULT_MODEL = ""
-DEFAULT_CONTEXT_WINDOW = 128_000
+DEFAULT_CONTEXT_WINDOW = 1_000_000
 DEFAULT_SESSION_DIR = Path.home() / ".coding-agent" / "sessions"
 DEFAULT_CREDENTIAL_ENV = ("CODING_AGENT_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY")
+ONBOARDING_MODEL_ENVS = ("CODING_AGENT_MODEL", "OPENAI_MODEL", "DEEPSEEK_MODEL")
+ONBOARDING_BASE_URL_ENVS = (
+    "CODING_AGENT_BASE_URL",
+    "OPENAI_BASE_URL",
+    "DEEPSEEK_BASE_URL",
+)
 SYSTEM_PROMPT = Message(
     role="system",
     content=(
@@ -43,6 +54,10 @@ SYSTEM_PROMPT = Message(
 
 class ConfigurationError(ValueError):
     """Raised when required CLI configuration is absent or invalid."""
+
+
+class MissingConfiguration(ConfigurationError):
+    """Raised when interactive launch configuration (model or credential) is absent."""
 
 
 def _resolve_workspace(workspace: str | Path | None) -> Path:
@@ -62,7 +77,7 @@ def _resolve_model(model: str | None) -> str:
         or os.getenv("DEEPSEEK_MODEL")
     )
     if not value:
-        raise ConfigurationError("missing model configuration")
+        raise MissingConfiguration("missing model configuration")
     return value
 
 
@@ -125,7 +140,7 @@ def create_app(
     resolved_key, _ = _resolve_api_key(api_key, credential_env)
     if provider is None and not resolved_key:
         env_name = credential_env or " or ".join(DEFAULT_CREDENTIAL_ENV)
-        raise ConfigurationError(f"missing credential; set {env_name}")
+        raise MissingConfiguration(f"missing credential; set {env_name}")
 
     resolved_base_url = (
         base_url
@@ -180,6 +195,57 @@ async def _discard_event(event) -> None:
     del event
 
 
+def onboarding_guidance() -> str:
+    """Return actionable, credential-free configuration instructions."""
+    model_envs = " or ".join(ONBOARDING_MODEL_ENVS)
+    key_envs = " or ".join(DEFAULT_CREDENTIAL_ENV)
+    base_url_envs = " or ".join(ONBOARDING_BASE_URL_ENVS)
+    return (
+        "coding-agent could not start: model or API key configuration is missing.\n"
+        "\n"
+        "Required environment variables:\n"
+        f"  model:   {model_envs}\n"
+        f"  api key: {key_envs}\n"
+        "\n"
+        "Optional settings:\n"
+        f"  base url: {base_url_envs}\n"
+        "  context window: --context-window <tokens>"
+        f" (default {DEFAULT_CONTEXT_WINDOW})\n"
+        "\n"
+        "Configure the variables and relaunch, for example:\n"
+        "  export CODING_AGENT_MODEL=your-model\n"
+        "  export CODING_AGENT_API_KEY=your-key\n"
+        "  coding-agent --workspace .\n"
+        "\n"
+        "The API key is read from the environment only and is never stored.\n"
+        "Press q or Ctrl+C to exit."
+    )
+
+
+class ConfigurationScreen(App[None]):
+    """Standalone screen shown when interactive launch configuration is absent."""
+
+    BINDINGS: ClassVar = [
+        Binding("q", "exit_app", "Quit", priority=True),
+        Binding("ctrl+c", "exit_app", "Quit", priority=True),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._message, id="onboarding", markup=False)
+
+    def action_exit_app(self) -> None:
+        self.exit()
+
+
+def _run_onboarding() -> int:
+    ConfigurationScreen(onboarding_guidance()).run()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="coding-agent",
@@ -206,6 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             session_dir=args.session_dir,
             context_window=args.context_window,
         )
+    except MissingConfiguration:
+        return _run_onboarding()
     except ConfigurationError:
         print("coding-agent configuration error", file=os.sys.stderr)
         return 2

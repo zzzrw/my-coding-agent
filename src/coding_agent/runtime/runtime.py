@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from coding_agent.context.policy import ContextPolicy
+from coding_agent.llm.openai_compatible import redact_secrets
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
 from coding_agent.runtime.events import EventSink, RuntimeEvent
 from coding_agent.runtime.models import Message, RuntimeStatus, TurnOutcome
@@ -338,16 +339,17 @@ class AgentRuntime:
             if run_id in self._forced_aborts:
                 return
             self._status = RuntimeStatus(status="error", run_id=run_id, turn_id=turn_id)
+            message = redact_secrets(str(exc))
             with contextlib.suppress(Exception):
                 self.store.append_new(
                     "turn_end",
-                    {"reason": "runtime_error", "error": str(exc)},
+                    {"reason": "runtime_error", "error": message},
                     run_id=run_id,
                     turn_id=turn_id,
                 )
             turn_closed = True
             await self._emit(
-                "run_error", code="runtime_error", message=str(exc), recoverable=False
+                "run_error", code="runtime_error", message=message, recoverable=False
             )
         finally:
             if self._task is asyncio.current_task():

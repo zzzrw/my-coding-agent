@@ -1,13 +1,46 @@
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from coding_agent.runtime.models import LLMEvent, Message, Usage
 from coding_agent.tools.models import ToolSchema
+
+_BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]+")
+_USERINFO_RE = re.compile(r"(?i)([a-z][a-z0-9+.\-]*://)([^/@\s]+)@")
+_CREDENTIAL_PARAM_RE = re.compile(
+    r"(?i)\b(api[_-]?key|apikey|key|token|auth|authorization|secret|password|passwd)\b"
+    r"(\s*[=:]\s*)(?:\'[^\']*\'|\"[^\"]*\"|[^\s&;,\"\'#]+)"
+)
+
+
+def redact_secrets(text: str, *, secrets: Iterable[str] = ()) -> str:
+    """Redact known secrets and credential-bearing URL/bearer forms from text."""
+    if not text:
+        return text
+    result = text
+    for secret in secrets:
+        if secret:
+            result = result.replace(secret, "[REDACTED]")
+    result = _BEARER_RE.sub(r"\1 [REDACTED]", result)
+    result = _USERINFO_RE.sub(r"\1[REDACTED]@", result)
+    result = _CREDENTIAL_PARAM_RE.sub(r"\1\2[REDACTED]", result)
+    return result
+
+
+def _collect_secrets(api_key: str | None, base_url: str | None) -> tuple[str, ...]:
+    secrets: list[str] = []
+    if api_key:
+        secrets.append(api_key)
+    if base_url:
+        match = _USERINFO_RE.search(base_url)
+        if match and match.group(2):
+            secrets.append(match.group(2))
+    return tuple(secrets)
 
 
 class ChatChunkParser:
@@ -107,6 +140,10 @@ class OpenAICompatibleProvider:
         self.client = client or AsyncOpenAI(
             api_key=self.api_key, base_url=self.base_url
         )
+        self._secrets = _collect_secrets(self.api_key, self.base_url)
+
+    def _redact(self, text: str) -> str:
+        return redact_secrets(text, secrets=self._secrets)
 
     async def stream(
         self,
@@ -183,4 +220,4 @@ class OpenAICompatibleProvider:
                         continue
                     yield event
         except Exception as exc:  # noqa: BLE001 - provider failures become normalized events
-            yield LLMEvent(type="error", error=str(exc))
+            yield LLMEvent(type="error", error=self._redact(str(exc)))
