@@ -147,7 +147,7 @@ class CodingAgentApp(App[None]):
     Screen { layout: vertical; }
     #transcript { height: 1fr; width: 1fr; }
     #transcript .row { margin: 0 0 1 0; width: 1fr; }
-    #transcript .row.row-user { width: 1fr; background: $surface; padding: 0 1; margin: 1 0 1 0; }
+    #transcript .row.row-user { width: 1fr; background: #2b2b2e; padding: 0 1; margin: 1 0 1 0; }
     #transcript .row.row-local_command { color: $text-muted; }
     #composer { height: 4; width: 1fr; }
     #composer-input { height: 4; width: 1fr; }
