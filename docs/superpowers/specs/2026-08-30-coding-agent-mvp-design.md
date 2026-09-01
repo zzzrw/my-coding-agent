@@ -750,6 +750,18 @@ performs the shutdown. Editing the composer draft, or starting a new run,
 disarms the confirmation. While a run is active, `ctrl+c` aborts it (or
 dismisses a pending approval); shutdown still waits for the abort to settle.
 
+History backtracking (fork): while idle with an empty composer, pressing
+`esc` twice within 800 ms opens a rewind picker listing the user-authored
+messages of the current session. Up/down selects a message; `enter` forks the
+session at that message: `AgentRuntime.fork_at(message_id)` creates a new
+session whose persisted records end at the selected user message, swaps the
+runtime onto it, and returns the prompt text. The TUI refills the composer
+with that prompt (nothing auto-submits); editing and resubmitting continues
+from the fork point. The original session is untouched. A fork is rejected
+while a run is active or an approval is pending; the selection is re-validated
+against the persisted records and, on failure, the prompt is refilled with an
+error notice.
+
 Commands are local and do not enter model history:
 
 ```text
