@@ -537,13 +537,23 @@ async def test_clicking_non_tool_row_does_not_toggle():
 
 
 def _span_for(text, needle):
-    """Return the resolved Rich style covering ``needle`` in ``text``."""
+    """Return the effective Rich style covering ``needle`` in ``text``.
+
+    Every overlapping span is merged, so nested styling (e.g. inline code
+    inside bold) reports the combined style.
+    """
     from rich.style import Style
 
-    span = next(
-        span for span in text.spans if needle in text.plain[span.start : span.end]
-    )
-    return span.style if isinstance(span.style, Style) else Style.parse(span.style)
+    start = text.plain.index(needle)
+    end = start + len(needle)
+    style = Style()
+    for span in text.spans:
+        if span.start < end and span.end > start:
+            span_style = (
+                span.style if isinstance(span.style, Style) else Style.parse(span.style)
+            )
+            style += span_style
+    return style
 
 
 def test_markdown_bold_renders_bold_without_markers():
@@ -569,6 +579,26 @@ def test_markdown_inline_code_gets_distinct_style():
     assert "pytest -q" in text.plain
     span = _span_for(text, "pytest -q")
     assert span.reverse or span.bgcolor is not None
+
+
+def test_markdown_inline_code_inside_bold_strips_backticks():
+    text = markdown_to_text("**Directory Listing: `src/coding_agent`**")
+
+    assert "`" not in text.plain
+    assert "src/coding_agent" in text.plain
+    code_span = _span_for(text, "src/coding_agent")
+    assert code_span.reverse or code_span.bgcolor is not None
+    assert _span_for(text, "Directory Listing:").bold
+
+
+def test_markdown_nested_bold_within_paragraph_keeps_outer_bold():
+    text = markdown_to_text("**Answer:** the directory `src` does **not** exist")
+
+    assert "**" not in text.plain
+    assert "`" not in text.plain
+    assert _span_for(text, "Answer:").bold
+    assert _span_for(text, "not").bold
+    assert _span_for(text, "src").reverse or _span_for(text, "src").bgcolor is not None
 
 
 def test_markdown_fenced_code_is_indented_dimmed_and_fenceless():

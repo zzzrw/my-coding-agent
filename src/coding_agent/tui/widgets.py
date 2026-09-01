@@ -470,69 +470,47 @@ def _tool_row_text(item: TranscriptItem) -> str:
     return "\n".join(lines)
 
 
+_INLINE_TOKEN_RE = re.compile(
+    r"\*\*[^*]+\*\*"
+    r"|`[^`]+`"
+    r"|\[[^\]]+\]\([^)]+\)"
+    r"|(?<!\*)\*[^*\s][^*]*\*(?!\*)"
+    r"|_[^_\s][^_]*_"
+)
+
+
 def _append_inline(text: Text, line: str) -> None:
-    """Append one line to ``text``, styling inline markdown tokens."""
-    i = 0
-    n = len(line)
-    buf_start = 0
-    while i < n:
-        if line.startswith("**", i):
-            end = line.find("**", i + 2)
-            if end != -1:
-                if i > buf_start:
-                    text.append(line[buf_start:i])
-                text.append(line[i + 2 : end], style="bold")
-                i = end + 2
-                buf_start = i
-                continue
-            # Unbalanced opener renders literally so malformed input never
-            # swallows visible text.
-            text.append(line[i : i + 2])
-            i += 2
-            buf_start = i
-            continue
-        if line[i] == "`":
-            end = line.find("`", i + 1)
-            if end != -1:
-                if i > buf_start:
-                    text.append(line[buf_start:i])
-                text.append(line[i + 1 : end], style="reverse")
-                i = end + 1
-                buf_start = i
-                continue
-        if line[i] == "[":
-            end = line.find("]", i + 1)
-            if end != -1 and end + 1 < n and line[end + 1] == "(":
-                url_end = line.find(")", end + 2)
-                if url_end != -1:
-                    if i > buf_start:
-                        text.append(line[buf_start:i])
-                    text.append(line[i + 1 : end])
-                    text.append(f" ({line[end + 2 : url_end]})", style="dim")
-                    i = url_end + 1
-                    buf_start = i
-                    continue
-        if line[i] == "*":
-            end = line.find("*", i + 1)
-            if end != -1:
-                if i > buf_start:
-                    text.append(line[buf_start:i])
-                text.append(line[i + 1 : end], style="italic")
-                i = end + 1
-                buf_start = i
-                continue
-        if line[i] == "_":
-            end = line.find("_", i + 1)
-            if end != -1:
-                if i > buf_start:
-                    text.append(line[buf_start:i])
-                text.append(line[i + 1 : end], style="italic")
-                i = end + 1
-                buf_start = i
-                continue
-        i += 1
-    if buf_start < n:
-        text.append(line[buf_start:])
+    """Append one line to ``text``, styling inline markdown tokens.
+
+    Tokens are matched by pattern and nested content is processed
+    recursively, so `` `code` `` inside `` **bold** `` renders without
+    literal backticks. Unbalanced tokens fall back to literal text.
+    """
+    pos = 0
+    for match in _INLINE_TOKEN_RE.finditer(line):
+        token = match.group(0)
+        if match.start() > pos:
+            text.append(line[pos : match.start()])
+        if token.startswith("**"):
+            sub = Text("", style="bold")
+            _append_inline(sub, token[2:-2])
+            text.append(sub)
+        elif token.startswith("`"):
+            text.append(token[1:-1], style="reverse")
+        elif token.startswith("["):
+            link = re.fullmatch(r"\[([^\]]+)\]\(([^)]+)\)", token)
+            if link is not None:
+                text.append(link.group(1))
+                text.append(f" ({link.group(2)})", style="dim")
+            else:
+                text.append(token)
+        elif token.startswith(("*", "_")):
+            text.append(token[1:-1], style="italic")
+        else:
+            text.append(token)
+        pos = match.end()
+    if pos < len(line):
+        text.append(line[pos:])
 
 
 def markdown_to_text(text: str) -> Text:
