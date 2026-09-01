@@ -23,6 +23,7 @@ from coding_agent.tui.widgets import (
     SubmitTextArea,
     TranscriptRow,
     TranscriptView,
+    detect_git_branch,
 )
 
 _COMPACTING_CONFLICTS = frozenset(
@@ -168,11 +169,14 @@ class CodingAgentApp(App[None]):
         runtime: Any,
         initial_state: TuiState | None = None,
         queue_size: int = 256,
+        branch_detector: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__()
         self.runtime = runtime
         self.state = initial_state or _state_from_runtime(runtime)
         self._queue_size = queue_size
+        self._branch_detector = branch_detector or detect_git_branch
+        self._git_branch_detections = 0
         self._bridge: _RuntimeBridge | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._approval_request_id: str | None = None
@@ -199,7 +203,25 @@ class CodingAgentApp(App[None]):
         self._unsubscribe = self.runtime.subscribe(self._bridge.publish)
         self._bridge.start()
         await self._refresh_widgets()
+        self._schedule_git_branch_detection(self.state.workspace)
         self.query_one("#composer-input", SubmitTextArea).focus()
+
+    def _schedule_git_branch_detection(self, workspace: str) -> None:
+        self.run_worker(
+            self._detect_git_branch(workspace),
+            name="detect-git-branch",
+            group="runtime",
+            exit_on_error=False,
+        )
+
+    async def _detect_git_branch(self, workspace: str) -> None:
+        try:
+            branch = await asyncio.to_thread(self._branch_detector, workspace)
+            if self.state.workspace == workspace and self.state.git_branch != branch:
+                self.state = self.state.model_copy(update={"git_branch": branch})
+                self.call_after_refresh(self._refresh_widgets)
+        finally:
+            self._git_branch_detections += 1
 
     async def on_unmount(self, event: events.Unmount) -> None:
         del event
@@ -604,6 +626,11 @@ class CodingAgentApp(App[None]):
             return
         previous = self.state
         self.state = reduce(self.state, event)
+        if (
+            event.type == "session_loaded"
+            and self.state.workspace != previous.workspace
+        ):
+            self._schedule_git_branch_detection(self.state.workspace)
         lifecycle_event_applied = (
             event.type not in {"run_finished", "run_error"} or self.state != previous
         )

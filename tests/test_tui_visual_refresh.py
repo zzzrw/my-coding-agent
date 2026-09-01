@@ -6,11 +6,13 @@ Coverage is added per task:
 - Task 2: per-kind transcript row classes and app CSS rules.
 - Task 3: compact click-expandable tool rows.
 - Task 4: lightweight markdown_to_text for assistant rows.
+- Task 6: workspace git branch detection feeding the statusline.
 """
 
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import pytest
 
@@ -23,7 +25,12 @@ from coding_agent.tools.registry import ToolRegistry
 from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import TranscriptItem, TuiState, initial_state
-from coding_agent.tui.widgets import TranscriptRow, _row_text, markdown_to_text
+from coding_agent.tui.widgets import (
+    TranscriptRow,
+    _row_text,
+    detect_git_branch,
+    markdown_to_text,
+)
 
 
 class ScriptedProvider:
@@ -827,3 +834,126 @@ async def test_full_pipeline_smoke_renders_visual_refresh_features():
         statusline = pilot.app.query_one("#statusline")
         assert statusline.is_mounted
         assert "model fake" in str(statusline.render())
+
+
+# ---------------------------------------------------------------------------
+# Task 6: workspace git branch detection in the statusline
+# ---------------------------------------------------------------------------
+
+
+def _git_repo(tmp_path, branch="feature"):
+    """Initialize ``tmp_path`` as a real git checkout on ``branch``."""
+    subprocess.run(
+        ["git", "init", "-b", branch, str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "file.txt").write_text("x")
+    subprocess.run(
+        ["git", "add", "file.txt"], cwd=str(tmp_path), check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_detect_git_branch_returns_branch_in_git_checkout(tmp_path):
+    _git_repo(tmp_path, branch="feature-xyz")
+
+    assert detect_git_branch(str(tmp_path)) == "feature-xyz"
+
+
+def test_detect_git_branch_returns_none_outside_git_repo(tmp_path):
+    assert detect_git_branch(str(tmp_path)) is None
+
+
+def test_detect_git_branch_never_raises_on_missing_directory(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    assert detect_git_branch(str(missing)) is None
+
+
+def test_detect_git_branch_returns_none_for_empty_workspace():
+    assert detect_git_branch("") is None
+
+
+def _branch_detector(workspace):
+    return "branch" + workspace.strip("/").replace("/", "-")
+
+
+async def _wait_for(predicate, *, timeout=5):
+    """Pump the event loop until ``predicate`` is truthy or the timeout hits."""
+
+    async def _check():
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_check(), timeout=timeout)
+
+
+def _statusline_text(pilot):
+    return str(pilot.app.query_one("#statusline").render())
+
+
+@pytest.mark.asyncio
+async def test_app_populates_git_branch_on_mount():
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(workspace="/tmp/project", model="fake"),
+        branch_detector=_branch_detector,
+    )
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _wait_for(lambda: app.state.git_branch == "branchtmp-project")
+        await _wait_for(lambda: "branch branchtmp-project" in _statusline_text(pilot))
+
+
+@pytest.mark.asyncio
+async def test_app_non_git_workspace_renders_branch_dash():
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(workspace="/tmp/project", model="fake"),
+        branch_detector=lambda workspace: None,
+    )
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _wait_for(lambda: app._git_branch_detections >= 1)
+        assert app.state.git_branch is None
+        assert "branch -" in _statusline_text(pilot)
+
+
+@pytest.mark.asyncio
+async def test_session_loaded_with_new_workspace_refreshes_git_branch():
+    runtime = _FakeRuntime()
+    app = CodingAgentApp(
+        runtime=runtime,
+        initial_state=initial_state(workspace="/a", model="fake"),
+        branch_detector=_branch_detector,
+    )
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await _wait_for(lambda: app.state.git_branch == "brancha")
+        await runtime.emit(
+            RuntimeEvent(
+                type="session_loaded",
+                payload={"session_id": "s2", "workspace": "/b"},
+            )
+        )
+        await _wait_for(lambda: app.state.git_branch == "branchb")
+        await _wait_for(lambda: "branch branchb" in _statusline_text(pilot))

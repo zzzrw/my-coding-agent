@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Iterable
 from datetime import datetime
 from typing import ClassVar
@@ -578,3 +579,31 @@ def _row_id(item: TranscriptItem, index: int) -> str:
 
 def _short_id(value: str | None) -> str:
     return value[:8] if value else "-"
+
+
+_GIT_BRANCH_TIMEOUT_SECONDS = 1.0
+
+
+def detect_git_branch(workspace: str) -> str | None:
+    """Return the workspace's current git branch, or None on any failure.
+
+    Runs ``git -C <workspace> rev-parse --abbrev-ref HEAD`` with a short
+    timeout. Never raises: a non-git directory, a missing ``git`` binary, or a
+    slow repository all yield None so the statusline renders ``branch -``.
+    """
+    if not workspace:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", workspace, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_BRANCH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch or None
