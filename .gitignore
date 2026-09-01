@@ -157,6 +157,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# coding-agent credentials and local config (never commit keys)
+.coding-agent.toml
+config.toml
+approvals.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
