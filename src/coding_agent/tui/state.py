@@ -11,6 +11,8 @@ class TranscriptItem(BaseModel):
     kind: Literal["user", "assistant", "tool", "system", "local_command"]
     item_id: str
     text: str = ""
+    pending: bool = False
+    started_at: float | None = None
     level: Literal["notice", "error"] | None = None
     tool_name: str | None = None
     tool_call_id: str | None = None

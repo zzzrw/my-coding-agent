@@ -88,7 +88,12 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
         if message_id:
             _append_or_update(
                 transcript,
-                TranscriptItem(kind="assistant", item_id=message_id),
+                TranscriptItem(
+                    kind="assistant",
+                    item_id=message_id,
+                    pending=True,
+                    started_at=time.monotonic(),
+                ),
             )
 
     elif event.type == "assistant_delta":
@@ -106,13 +111,27 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             else:
                 row = transcript[index]
                 transcript[index] = row.model_copy(
-                    update={"text": row.text + _text(payload.get("text"))}
+                    update={
+                        "text": row.text + _text(payload.get("text")),
+                        "pending": False,
+                        "started_at": None,
+                    }
                 )
 
     elif event.type == "assistant_finished":
         message_id = _non_empty_str(payload.get("message_id"))
-        if message_id is not None and _find_assistant(transcript, message_id) is None:
-            transcript.append(TranscriptItem(kind="assistant", item_id=message_id))
+        if message_id is not None:
+            index = _find_assistant(transcript, message_id)
+            if index is None:
+                transcript.append(
+                    TranscriptItem(kind="assistant", item_id=message_id)
+                )
+            else:
+                row = transcript[index]
+                if row.pending:
+                    transcript[index] = row.model_copy(
+                        update={"pending": False, "started_at": None}
+                    )
 
     elif event.type == "tool_started":
         call_id = _non_empty_str(payload.get("tool_call_id"))
