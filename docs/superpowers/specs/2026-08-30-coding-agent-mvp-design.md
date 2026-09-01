@@ -402,24 +402,25 @@ catastrophic command: deny
 
 ```text
 workspace read/write/edit: allow
-simple workspace-safe shell: allow
+shell (including compound and unknown syntax): allow
 outside explicit path: ask; approve grants this call only
-outside-or-unknown shell: ask
 catastrophic command: deny
 ```
 
-Shell classification is conservative. Absolute paths, `..`, `cd`, `git -C`,
-external redirection, command substitution, unknown scripts, and inline
-file-writing code are `outside-or-unknown`; `default` and `workspace` ask for
-one-time approval before executing them. This is an application policy, not an
-OS sandbox; shell still runs with the user's process permissions.
+Shell classification is conservative but informational: `&&`, `|`, `;`,
+absolute paths, `..`, `cd`, `git -C`, redirection, command substitution,
+unknown scripts, and inline file-writing code are flagged `outside-or-unknown`,
+but `workspace` runs them without approval — only the catastrophic denylist
+gates shell here. `default` still asks for every shell command. This is an
+application policy, not an OS sandbox; shell still runs with the user's process
+permissions.
 
 ### `full`
 
 ```text
 ordinary tools: allow without approval
 workspace-outside paths: allow
-ordinary shell: allow without approval
+shell (including compound and unknown syntax): allow without approval
 catastrophic command: deny, non-bypassable
 ```
 
@@ -447,8 +448,10 @@ git\s+clean\s+-[^\n]*f[^\n]*d
 :\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;
 ```
 
-Unknown or unclassifiable shell syntax is `ask` in `default` and
-`workspace`; it is `allow` in `full` unless it matches a catastrophic rule.
+Unknown or unclassifiable shell syntax is `ask` in `default`; it is `allow`
+in `workspace` and `full` unless it matches a catastrophic rule.
+Download-and-execute pipelines such as `curl ... | sh` are not catastrophic;
+they follow the same mode rule: allow in `workspace`/`full`, ask in `default`.
 The denylist is a minimum safety net, has known false negatives, and is not a
 complete shell parser or OS sandbox.
 
