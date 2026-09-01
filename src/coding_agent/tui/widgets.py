@@ -55,14 +55,18 @@ class TranscriptRow(Static):
 
 
 class TranscriptView(VerticalScroll):
-    """Scrollable transcript renderer."""
+    """Scrollable transcript renderer.
+
+    Rows are mounted as styled child widgets; ``_rendered_text`` is kept only
+    as a plain-text snapshot for the ``renderable_text`` property and tests.
+    No ``render()`` override is used: painting a second raw fallback text on a
+    container that also mounts styled children produced offset overlapping
+    duplicates in a real terminal.
+    """
 
     def __init__(self, *children, **kwargs) -> None:
         super().__init__(*children, **kwargs)
         self._rendered_text = ""
-
-    def render(self) -> Text:
-        return Text(self._rendered_text)
 
     @property
     def renderable_text(self) -> str:

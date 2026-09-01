@@ -1090,7 +1090,7 @@ async def test_runtime_error_is_visible_in_system_row() -> None:
         assert app.state.status == "error"
         assert app.state.transcript[-1].kind == "system"
         assert "provider unavailable" in str(
-            pilot.app.query_one("#transcript").render()
+            pilot.app.query_one("#transcript").renderable_text
         )
 
 
