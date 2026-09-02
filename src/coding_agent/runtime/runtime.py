@@ -774,7 +774,7 @@ class AgentRuntime:
                 return
             path, original = entry
             if original is None:
-                with contextlib.suppress(FileNotFoundError):
+                with contextlib.suppress(FileNotFoundError, IsADirectoryError):
                     path.unlink()
             else:
                 _atomic_write(path, original)

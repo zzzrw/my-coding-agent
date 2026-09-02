@@ -548,6 +548,69 @@ async def test_undo_removes_created_file(tmp_path):
     assert not (tmp_path / "new.txt").exists()
 
 
+async def test_undo_after_clear_directory_does_not_raise(tmp_path):
+    target = tmp_path / "dir"
+    target.mkdir()
+    (target / "a.txt").write_text("a", encoding="utf-8")
+    (target / "b.txt").write_text("b", encoding="utf-8")
+    application = _undo_app(
+        tmp_path,
+        [
+            _tool_response("c1", "clear_directory", {"path": "dir"}),
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(type="response_end", finish_reason="stop"),
+            ],
+        ],
+    )
+    runtime = application.runtime
+    finished = asyncio.Event()
+
+    async def sink(event):
+        if event.type == "run_finished":
+            finished.set()
+
+    runtime.subscribe(sink)
+    await runtime.submit("clear the directory")
+    await asyncio.wait_for(finished.wait(), timeout=5)
+    assert target.is_dir()
+    assert not (target / "a.txt").exists()
+    assert not (target / "b.txt").exists()
+
+    # clear_directory journals the directory path with original=None; undo must
+    # not try to unlink the still-existing directory and raise.
+    await runtime.undo()
+    assert target.is_dir()
+
+
+async def test_undo_after_remove_file_restores_the_file(tmp_path):
+    (tmp_path / "keep.txt").write_text("original", encoding="utf-8")
+    application = _undo_app(
+        tmp_path,
+        [
+            _tool_response("c1", "remove_file", {"path": "keep.txt"}),
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(type="response_end", finish_reason="stop"),
+            ],
+        ],
+    )
+    runtime = application.runtime
+    finished = asyncio.Event()
+
+    async def sink(event):
+        if event.type == "run_finished":
+            finished.set()
+
+    runtime.subscribe(sink)
+    await runtime.submit("remove keep.txt")
+    await asyncio.wait_for(finished.wait(), timeout=5)
+    assert not (tmp_path / "keep.txt").exists()
+
+    await runtime.undo()
+    assert (tmp_path / "keep.txt").read_text(encoding="utf-8") == "original"
+
+
 async def test_undo_with_empty_journal_is_a_noop_that_emits_a_notice(tmp_path):
     application = _undo_app(tmp_path, [])
     runtime = application.runtime
