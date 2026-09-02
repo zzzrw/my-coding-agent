@@ -393,6 +393,59 @@ async def test_resume_history_carries_command_and_metadata_for_tools(tmp_path):
     assert item["tool_status"] == "success"
 
 
+@pytest.mark.asyncio
+async def test_resume_command_label_excludes_write_payload(tmp_path):
+    runtime, _ = make_runtime(tmp_path)
+    session_id = runtime.session_id
+    body = "SECRETBODY-" + "y" * 5000
+    call = ToolCall(
+        id="c1", name="write_file", arguments={"path": "a.txt", "content": body}
+    )
+    assistant = Message(role="assistant", tool_calls=[call])
+    runtime.store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
+    runtime.store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="go")},
+        turn_id="t1",
+    )
+    runtime.store.append_new(
+        "assistant_message", {"message": assistant, "complete": True}, turn_id="t1"
+    )
+    runtime.store.append_new(
+        "tool_call",
+        {"tool_call": call, "source_assistant_record_id": "src"},
+        turn_id="t1",
+    )
+    runtime.store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="c1",
+                tool_name="write_file",
+                ok=True,
+                content="saved",
+            )
+        },
+        turn_id="t1",
+    )
+    runtime.store.append_new("turn_end", {"reason": "completed"}, turn_id="t1")
+
+    events = []
+    runtime.subscribe(events.append)
+    await runtime.new_session()
+    await runtime.resume(session_id)
+
+    loaded = [item for item in events if item.type == "session_loaded"][-1]
+    tool_items = [
+        item for item in loaded.payload["history"] if item["message"]["role"] == "tool"
+    ]
+    assert len(tool_items) == 1
+    item = tool_items[0]
+    assert item["command"] == "path=a.txt"
+    assert "SECRETBODY" not in item["command"]
+    assert "content" not in item["command"]
+
+
 async def test_submit_publishes_user_message_and_turn_id(tmp_path):
     runtime, runner = make_runtime(tmp_path)
     events = []

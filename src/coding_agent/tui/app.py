@@ -15,7 +15,7 @@ from textual.binding import Binding
 from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.skills.discovery import discover_skills
 from coding_agent.tui.commands import SUPPORTED_COMMANDS, parse_command
-from coding_agent.tui.reducer import reduce
+from coding_agent.tui.reducer import _command_text, reduce
 from coding_agent.tui.state import TuiState, initial_state
 from coding_agent.tui.widgets import (
     ApprovalScreen,
@@ -45,9 +45,6 @@ _PROMPT_HISTORY_MAX = 50
 _INBOX_MAX_ROWS = 20
 """Maximum number of records shown in the call-history inbox."""
 
-_INBOX_COMPACT_ARG_CHARS = 120
-"""Length cap on the compact tool-argument summary in an inbox row."""
-
 
 class _PromptHistory(list[str]):
     """A prompt list capped at ``_PROMPT_HISTORY_MAX``, dropping oldest first."""
@@ -66,21 +63,17 @@ class _PromptHistory(list[str]):
             self.append(item)
 
 
-def _inbox_compact_args(arguments: object) -> str:
+def _inbox_compact_args(arguments: object, tool_name: str | None = None) -> str:
     """One-line, length-capped summary of a tool call's arguments.
 
-    ``run_command`` shows its ``command`` verbatim; other tools render
-    ``key=value`` pairs. Over-long summaries are truncated with an ellipsis.
+    Mirrors the reducer's tool-row label: ``run_command`` shows its ``command``
+    and other tools render ``key=value`` pairs, always excluding the oversized
+    payload keys (``content``/``old_text``/``new_text``) and capping the label
+    at ~160 chars, so a huge ``write_file`` body never leaks into an inbox row.
     """
     if not isinstance(arguments, Mapping) or not arguments:
         return ""
-    if "command" in arguments and isinstance(arguments["command"], str):
-        args_text = arguments["command"].strip()
-    else:
-        args_text = ", ".join(f"{key}={value}" for key, value in arguments.items())
-    if len(args_text) > _INBOX_COMPACT_ARG_CHARS:
-        args_text = args_text[:_INBOX_COMPACT_ARG_CHARS].rstrip() + "…"
-    return args_text
+    return _command_text(dict(arguments), tool_name) or ""
 
 
 def _inbox_result_status(result: object) -> str:
@@ -112,7 +105,7 @@ def _format_inbox_record(record: object) -> str | None:
     if record_type == "tool_call":
         call = payload.get("tool_call")
         name = getattr(call, "name", "") or ""
-        args = _inbox_compact_args(getattr(call, "arguments", None))
+        args = _inbox_compact_args(getattr(call, "arguments", None), name)
         summary = f"tool {name}"
         if args:
             summary += f" {args}"

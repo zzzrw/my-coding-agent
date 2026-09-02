@@ -28,15 +28,35 @@ def _projected_tool_status(result: ToolResult) -> str:
     return "error"
 
 
+_TOOL_LABEL_MAX_CHARS = 160
+_TOOL_PAYLOAD_KEYS = {"content", "old_text", "new_text"}
+
+
 def _projected_command(call: ToolCall | None) -> str | None:
-    """Derive the compact tool-row command label from a persisted tool call."""
+    """Derive the compact tool-row command label from a persisted tool call.
+
+    Mirrors the reducer's live tool-row label: ``run_command`` keeps its
+    ``command`` and other tools render ``key=value`` pairs, always excluding the
+    oversized payload keys and capping the label, so a resumed transcript never
+    shows a whole ``write_file`` body.
+    """
     if call is None or not call.arguments:
         return None
     if call.name == "run_command":
         command = call.arguments.get("command")
-        return command if isinstance(command, str) and command.strip() else None
-    pairs = [f"{key}={value}" for key, value in call.arguments.items()]
-    return ", ".join(pairs) if pairs else None
+        label = command if isinstance(command, str) and command.strip() else None
+    else:
+        pairs = [
+            f"{key}={value}"
+            for key, value in call.arguments.items()
+            if key not in _TOOL_PAYLOAD_KEYS
+        ]
+        label = ", ".join(pairs) if pairs else None
+    if label is None:
+        return None
+    if len(label) > _TOOL_LABEL_MAX_CHARS:
+        label = label[: _TOOL_LABEL_MAX_CHARS - 1].rstrip() + "…"
+    return label
 
 
 _SUMMARY_MAX_CHARS = 4000

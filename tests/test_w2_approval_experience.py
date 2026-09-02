@@ -16,7 +16,11 @@ from coding_agent.tools.filesystem import make_write_file_tool
 from coding_agent.tools.registry import ToolRegistry
 from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.state import initial_state
-from coding_agent.tui.widgets import ApprovalScreen, render_approval_diff
+from coding_agent.tui.widgets import (
+    ApprovalScreen,
+    approval_details_text,
+    render_approval_diff,
+)
 
 
 def test_signature_normalizes_arguments():
@@ -367,6 +371,38 @@ def test_render_approval_diff_truncates_long(tmp_path):
     )
     text = render_approval_diff(req, workspace=tmp_path)
     assert "more lines" in str(text)
+
+
+def test_approval_details_never_dump_raw_arguments():
+    body = "LARGEBODY-" + "y" * 5000
+    req = ApprovalRequest(
+        request_id="5",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="write_file",
+        risk_level="mutate_file",
+        arguments={"path": "main.py", "content": body},
+        reason="write requested",
+    )
+    text = approval_details_text(req)
+    assert "Arguments: path=main.py" in text
+    assert "LARGEBODY" not in text
+    assert "content" not in text
+
+
+def test_approval_details_run_command_shows_bounded_command():
+    req = ApprovalRequest(
+        request_id="6",
+        run_id="r",
+        tool_call_id="c",
+        tool_name="run_command",
+        risk_level="external",
+        arguments={"command": "echo " + "a" * 400},
+        reason="run requested",
+    )
+    text = approval_details_text(req)
+    assert "Arguments: echo" in text
+    assert len(text.split("Arguments: ", 1)[1].splitlines()[0]) <= 160
 
 
 class _ApprovalRuntime:

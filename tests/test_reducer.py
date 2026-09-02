@@ -610,3 +610,24 @@ def test_tool_draft_run_command_surfaces_bounded_human_target() -> None:
     )
     row = next(item for item in state.transcript if item.kind == "assistant")
     assert row.draft_caption == "drafting run_command · ls -la"
+
+
+def test_plan_label_for_write_file_shows_only_path() -> None:
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event(
+            "plan_preview",
+            {
+                "tool_calls": [
+                    {
+                        "name": "write_file",
+                        "arguments": {"path": "main.py", "content": "x" * 5000},
+                    }
+                ]
+            },
+        ),
+    )
+    row = state.transcript[-1]
+    assert row.kind == "system"
+    assert "write_file(main.py)" in row.text
+    assert "content" not in row.text

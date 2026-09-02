@@ -502,6 +502,25 @@ def test_inbox_rows_capped_at_twenty():
     assert "cmd 5" in rows[-1]
 
 
+def test_inbox_write_file_row_omits_large_body():
+    runtime = FakeRuntime()
+    when = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    body = "LARGEBODY-" + "x" * 5000
+    runtime.store = FakeStore(
+        [
+            _tool_call_record(
+                "c1", "write_file", {"path": "a.txt", "content": body}, when=when
+            )
+        ]
+    )
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state())
+    rows = app._inbox_rows()
+    assert rows and "write_file" in rows[0]
+    assert "path=a.txt" in rows[0]
+    assert "content" not in rows[0]
+    assert "LARGEBODY" not in rows[0]
+
+
 @pytest.mark.asyncio
 async def test_inbox_command_opens_history_screen():
     app = CodingAgentApp(

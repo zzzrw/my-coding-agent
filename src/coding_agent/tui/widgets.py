@@ -24,6 +24,7 @@ from coding_agent.session.models import ApprovalRequest, SessionSummary
 from coding_agent.skills.catalog import catalog_lines, overlay_lines
 from coding_agent.skills.models import Skill
 from coding_agent.tui.commands import command_suggestions
+from coding_agent.tui.reducer import _command_text
 from coding_agent.tui.state import TranscriptItem, TuiState
 
 
@@ -660,6 +661,24 @@ class PermissionModeScreen(ModalScreen[str]):
         self.dismiss(None)
 
 
+def approval_details_text(request: ApprovalRequest) -> str:
+    """Header text for the approval panel.
+
+    The ``Arguments:`` line renders a compact, length-capped label (payload
+    keys such as ``content``/``old_text``/``new_text`` are excluded), so a
+    large ``write_file`` body is never dumped here; the capped diff below is
+    the place where the actual change is previewed.
+    """
+    label = _command_text(request.arguments, request.tool_name) or "-"
+    return (
+        "Approval required\n"
+        f"Tool: {request.tool_name}\n"
+        f"Risk: {request.risk_level}\n"
+        f"Arguments: {label}\n"
+        f"Reason: {request.reason}"
+    )
+
+
 class ApprovalScreen(ModalScreen[tuple[str, Scope, str | None]]):
     """Focused approval view with a diff preview, remember scope, and feedback.
 
@@ -684,13 +703,7 @@ class ApprovalScreen(ModalScreen[tuple[str, Scope, str | None]]):
 
     def compose(self) -> ComposeResult:
         request = self.request
-        details = (
-            f"Approval required\n"
-            f"Tool: {request.tool_name}\n"
-            f"Risk: {request.risk_level}\n"
-            f"Arguments: {request.arguments}\n"
-            f"Reason: {request.reason}"
-        )
+        details = approval_details_text(request)
         with Container(id="approval"):
             yield Static(details, id="approval-details", markup=False)
             if request.tool_name in {"write_file", "edit_file"}:
