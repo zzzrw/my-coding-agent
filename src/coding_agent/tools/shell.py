@@ -72,7 +72,10 @@ class _ShellTool:
                 except TimeoutError:
                     pass
             out, truncated = collect.result()
-            await self._terminate_remaining_group(proc.pid)
+            # On normal completion, intentionally backgrounded processes (e.g. a
+            # dev server started with ``&`` and its stdout redirected) must be
+            # left running so later commands can still reach them. The process
+            # group is only torn down on timeout/cancel above.
             return _result(
                 self.schema.name,
                 proc.returncode == 0,
@@ -100,20 +103,6 @@ class _ShellTool:
                 await output_sink(chunk.decode(errors="replace"))
         await proc.wait()
         return bytes(output), truncated
-
-    @staticmethod
-    async def _terminate_remaining_group(process_group_id: int) -> None:
-        try:
-            os.killpg(process_group_id, 0)
-        except ProcessLookupError:
-            return
-        os.killpg(process_group_id, signal_mod.SIGTERM)
-        await asyncio.sleep(0.05)
-        try:
-            os.killpg(process_group_id, 0)
-        except ProcessLookupError:
-            return
-        os.killpg(process_group_id, signal_mod.SIGKILL)
 
 
 def make_run_command_tool():

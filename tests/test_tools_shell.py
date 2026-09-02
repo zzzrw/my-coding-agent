@@ -55,15 +55,35 @@ async def test_run_command_cancellation_kills_process_group(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_successful_shell_cleans_background_descendants(tmp_path):
+async def test_background_descendant_survives_successful_completion(tmp_path):
+    # An intentionally backgrounded process (e.g. a dev server) must outlive
+    # the tool returning, so later commands can still reach it.
     marker = tmp_path / "late-marker"
     result = await make_run_command_tool().execute(
-        {"command": "{ sleep 0.2; touch late-marker; } >/dev/null 2>&1 &"},
+        {"command": "{ sleep 0.3; touch late-marker; } >/dev/null 2>&1 &"},
         context=ToolContext(workspace=tmp_path, permission_mode="full"),
         signal=asyncio.Event(),
     )
-    await asyncio.sleep(0.3)
     assert result.ok is True
+    await asyncio.sleep(0.5)
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_timeout_still_kills_background_group(tmp_path):
+    # Timeout/cancel remain destructive: they tear down the whole process group
+    # so a misbehaving command cannot leave a backgrounded worker behind.
+    marker = tmp_path / "leak-marker"
+    result = await make_run_command_tool().execute(
+        {
+            "command": "{ sleep 30; touch leak-marker; } >/dev/null 2>&1 & wait",
+            "timeout_seconds": 0.2,
+        },
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is False
+    await asyncio.sleep(0.3)
     assert not marker.exists()
 
 
