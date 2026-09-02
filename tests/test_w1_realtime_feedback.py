@@ -359,7 +359,6 @@ def test_statusline_renders_spinner_frame_and_elapsed() -> None:
     # elapsed timer (5s from run_started_at=100 to now=105).
     assert SPINNER_FRAMES[2] in rendered
     assert "running" in rendered
-    assert "⏱" in rendered
     assert "5s" in rendered
 
 
@@ -386,7 +385,6 @@ def test_statusline_waiting_approval_keeps_elapsed_but_pauses_spinner() -> None:
     rendered = str(text)
     # Elapsed time keeps ticking while approval is pending...
     assert "waiting_approval" in rendered
-    assert "⏱" in rendered
     assert "7s" in rendered
     # ...but the animated frame at the current index is not shown (paused).
     assert SPINNER_FRAMES[2] not in rendered
@@ -396,7 +394,7 @@ def test_statusline_running_without_start_shows_zero_elapsed() -> None:
     state = initial_state(".", "test")
     state = state.model_copy(update={"status": "running", "spinner_frame": 0})
     text = format_statusline(state, now=1.0)
-    assert "⏱0s" in str(text)
+    assert "0s" in str(text)
 
 
 class _FakeAppRuntime:

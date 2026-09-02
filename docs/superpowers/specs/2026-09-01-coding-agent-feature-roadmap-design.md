@@ -40,7 +40,8 @@ spinner and a live elapsed timer whenever the agent is active.
   stdout/stderr as it is produced. The compact form's preview line updates too.
 - The statusline `status` field shows an animated spinner frame (``⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏``)
   while `status == "running"` and the time since the current run started
-  (`⏱ 12s`). `waiting_approval` keeps the elapsed time but pauses the spinner.
+  (`12s`; no clock glyph, which overlapped the time in some terminals).
+  `waiting_approval` keeps the elapsed time but pauses the spinner.
 - A long-running command shows the live output AND the elapsed time; nothing
   blocks until the command finishes.
 

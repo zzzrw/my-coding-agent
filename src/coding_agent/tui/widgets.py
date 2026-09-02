@@ -767,9 +767,10 @@ def format_statusline(
     field is colored by state (running cyan, error red, aborted dim, idle
     default). While a run is active the status field also carries the spinner
     frame (``SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]``) and a live
-    ``⏱`` elapsed timer derived from ``state.run_started_at``; ``waiting_approval``
-    keeps the elapsed timer but shows a static pause glyph instead of an
-    animated frame. ``now`` injects the monotonic reference so callers (tests)
+    elapsed timer derived from ``state.run_started_at`` (rendered without a
+    clock glyph, which overlapped the time in some terminals);
+    ``waiting_approval`` keeps the elapsed timer but shows a static pause glyph
+    instead of an animated frame. ``now`` injects the monotonic reference so callers (tests)
     can render deterministically; it defaults to ``time.monotonic()``. Width
     truncation still operates on plain text lengths, so ``len(...) <= width``
     and substring checks behave as before.
@@ -846,13 +847,15 @@ def _status_value(state: TuiState, now: float | None) -> str:
     """Status field value, decorated with the spinner frame and elapsed time."""
     if state.status == "running":
         frame = SPINNER_FRAMES[state.spinner_frame % len(SPINNER_FRAMES)]
-        return f"{frame} running ⏱{_format_elapsed(_elapsed_seconds(state, now))}"
+        # The clock glyph overlaps the time in some terminals; elapsed is the
+        # running counter alone.
+        return f"{frame} running {_format_elapsed(_elapsed_seconds(state, now))}"
     if state.status == "waiting_approval":
         # Elapsed keeps ticking while approval is pending, but the animation
         # pauses on a static glyph until the run resumes.
         return (
             f"{_PAUSED_GLYPH} waiting_approval "
-            f"⏱{_format_elapsed(_elapsed_seconds(state, now))}"
+            f"{_format_elapsed(_elapsed_seconds(state, now))}"
         )
     return state.status
 
