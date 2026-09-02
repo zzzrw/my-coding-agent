@@ -53,11 +53,13 @@ def _latest_persisted_usage(store: SessionStore) -> Usage | None:
         if not isinstance(outcome, dict):
             continue
         usage = outcome.get("usage")
-        if isinstance(usage, dict) and (usage.get("total_tokens") or 0) > 0:
+        if isinstance(usage, dict):
             try:
-                return Usage.model_validate(usage)
+                parsed = Usage.model_validate(usage)
             except Exception:  # noqa: BLE001 - tolerate malformed persisted usage
                 return None
+            if parsed.authoritative_total() is not None:
+                return parsed
     return None
 
 
@@ -435,10 +437,16 @@ class AgentRuntime:
             self._last_outcome = outcome
             self._usage_seed = outcome.usage
             # The meter is authoritative from the outcome's provider usage: the
-            # full-request total, not a stale value preserved across turns.
+            # full-request total (total_tokens, or input+output when a streaming
+            # endpoint omits it), not a stale value preserved across turns. A
+            # usage that measured nothing (all zeros) is not authoritative, so
+            # the last reported estimate stays in place rather than dropping.
             final_usage = outcome.usage
-            if final_usage is not None and final_usage.total_tokens > 0:
-                context_used = final_usage.total_tokens
+            final_total = (
+                final_usage.authoritative_total() if final_usage is not None else None
+            )
+            if final_total is not None:
+                context_used = final_total
                 context_estimated = False
             else:
                 context_used = self._status.context_used
@@ -639,7 +647,9 @@ class AgentRuntime:
             self._status = RuntimeStatus(
                 context_window=self.store.header.context_window,
                 context_used=(
-                    restored_usage.total_tokens if restored_usage is not None else 0
+                    (restored_usage.authoritative_total() or 0)
+                    if restored_usage is not None
+                    else 0
                 ),
                 context_estimated=False,
             )

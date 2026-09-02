@@ -75,6 +75,21 @@ def _wire_tool(schema: ToolSchema) -> dict:
     }
 
 
+def _after_last_assistant(messages: list[Message]) -> list[Message]:
+    """Return the messages strictly after the newest assistant response.
+
+    The usage handed to :meth:`TruncatePolicy.prepare` always belongs to the
+    request that produced the newest assistant message in ``messages``, so
+    whatever sits after that message arrived after the measurement and is the
+    only part a provider total cannot already account for. When there is no
+    assistant message yet, nothing after a measured response exists to count.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].role == "assistant":
+            return messages[index + 1 :]
+    return []
+
+
 _HEADROOM_MIN = 12_000
 _HEADROOM_FRACTION = 0.05
 
@@ -147,12 +162,7 @@ class TruncatePolicy:
             message for key in retained_keys for message in groups[key]
         ]
         estimate = self.estimate_tokens(base_messages, tools=tools)
-        provider_total = (
-            usage.total_tokens if usage and usage.total_tokens > 0 else None
-        )
-        provider_input = (
-            usage.input_tokens if usage and usage.input_tokens > 0 else None
-        )
+        provider_total = usage.authoritative_total() if usage is not None else None
         must_compact = force and len(retained_keys) > 1
 
         removed = 0
@@ -174,13 +184,17 @@ class TruncatePolicy:
         if compacted:
             used_tokens = self.estimate_tokens(base_messages, tools=tools)
         elif provider_total is not None:
-            # The meter shows the full request total. If messages were appended
-            # since that response (a new turn's prompt, a tool result, ...) its
-            # input_tokens never included them, so add a small estimate of the
-            # items that arrived afterwards. Clamping keeps a purely-estimated
-            # context from ever reporting less than the authoritative total.
-            appended = estimate - provider_input if provider_input is not None else 0
-            used_tokens = provider_total + max(0, appended)
+            # The meter shows the full request total, which already includes the
+            # last measured response's own output tokens (its output_tokens).
+            # Only messages appended strictly after that response -- a newer
+            # turn's prompt, tool results appended since the last request -- are
+            # outside it. Estimate just that suffix: re-estimating the response
+            # text or earlier history would double-count it and make the meter
+            # oscillate (up at each step start, down when the next measured
+            # total re-emits).
+            appended_suffix = _after_last_assistant(base_messages)
+            appended = self.estimate_tokens(appended_suffix) if appended_suffix else 0
+            used_tokens = provider_total + appended
         else:
             used_tokens = estimate
         overflow = used_tokens > capacity and len(retained_keys) <= 1

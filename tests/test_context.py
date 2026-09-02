@@ -116,13 +116,45 @@ def test_used_adds_estimate_of_items_appended_since_the_response():
         context_window=1000,
         usage=usage,
     )
-    current = [SYSTEM] + [entry.message for entry in history + [appended]]
-    expected = 240 + max(
-        0, TruncatePolicy.estimate_tokens(current) - usage.input_tokens
-    )
-    assert view.used_tokens == expected
+    # The measured response is the history's last assistant message (item 4);
+    # only the user message that arrived strictly after it is appended, so the
+    # meter adds just that suffix -- never the response text already inside the
+    # provider total (its output_tokens) nor any earlier history.
+    suffix = [appended.message]
+    assert view.used_tokens == 240 + TruncatePolicy.estimate_tokens(suffix)
     assert view.estimated is False
     assert view.used_tokens > 240
+
+
+def test_used_never_recounts_the_measured_response_output():
+    # The assistant response (item 1) is the request the usage measured: its own
+    # output tokens are already inside total_tokens. The meter must not add an
+    # estimate of that response back on top (the old whole-history minus
+    # input_tokens fallback did), or it inflates above the provider total and
+    # later DROPS when the next measured total re-emits.
+    history = [
+        item(0, "t1", Message(role="user", content="old question")),
+        item(1, "t1", Message(role="assistant", content="x" * 2000)),
+    ]
+    usage = Usage(input_tokens=20, output_tokens=500, total_tokens=520)
+    view = TruncatePolicy(budget=1000).prepare(
+        history, system_prompt=SYSTEM, context_window=1000, usage=usage
+    )
+    assert view.used_tokens == 520
+    assert view.estimated is False
+
+
+def test_used_falls_back_to_input_plus_output_when_total_is_omitted():
+    # Streaming OpenAI-compatible endpoints may omit total_tokens while still
+    # reporting prompt/completion tokens; the measured total is then their sum
+    # and must not fall back to a pure estimate (nor drop to zero).
+    history = history_fixture()
+    usage = Usage(input_tokens=1000, output_tokens=200, total_tokens=0)
+    view = TruncatePolicy(budget=1000).prepare(
+        history, system_prompt=SYSTEM, context_window=1000, usage=usage
+    )
+    assert view.used_tokens == 1200
+    assert view.estimated is False
 
 
 def test_estimate_tokens_counts_cjk_and_emoji_per_codepoint():

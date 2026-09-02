@@ -399,16 +399,21 @@ class AgentRunner:
             # A response is the only place real usage is measured. Re-emit the
             # meter now with that full-request total so the UI updates without
             # waiting for a later request (a one-response turn would otherwise
-            # stay on its opening estimate).
+            # stay on its opening estimate). The authoritative total is the
+            # provider's total_tokens or, when a streaming endpoint omits it,
+            # the input+output sum; a usage that measured nothing (all zeros)
+            # reports nothing and the step estimate stays.
             if usage is not None:
-                await self._emit(
-                    "context_updated",
-                    run_id,
-                    turn_id,
-                    used_tokens=usage.total_tokens,
-                    context_window=self.context_window,
-                    estimated=False,
-                )
+                total = usage.authoritative_total()
+                if total is not None:
+                    await self._emit(
+                        "context_updated",
+                        run_id,
+                        turn_id,
+                        used_tokens=total,
+                        context_window=self.context_window,
+                        estimated=False,
+                    )
 
             if not parsed_calls:
                 return TurnOutcome(

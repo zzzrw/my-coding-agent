@@ -26,6 +26,21 @@ class Usage(StrictModel):
     output_tokens: int = 0
     total_tokens: int = 0
 
+    def authoritative_total(self) -> int | None:
+        """The provider-measured full request total, or None when unmeasured.
+
+        Streaming OpenAI-compatible endpoints sometimes omit ``total_tokens``
+        while still reporting prompt and completion tokens; the measured total
+        is then their sum. Only a usage that reported neither prompt nor
+        completion tokens has no authoritative total, so callers never mistake
+        an unmeasured (all-zero) usage for a real total of zero.
+        """
+        if self.total_tokens > 0:
+            return self.total_tokens
+        if self.input_tokens > 0 or self.output_tokens > 0:
+            return self.input_tokens + self.output_tokens
+        return None
+
 
 class LLMEvent(StrictModel):
     type: Literal[

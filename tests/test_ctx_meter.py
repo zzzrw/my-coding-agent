@@ -283,3 +283,146 @@ async def test_last_provider_usage_seeds_the_next_turn(tmp_path):
     await _wait_idle(runtime)
     assert runner.seen[1] is not None
     assert runner.seen[1].total_tokens == 7
+
+
+class _ZeroTotalUsageProvider:
+    """Streaming endpoints may omit ``total_tokens`` yet report prompt+completion."""
+
+    def __init__(self):
+        self.requests = []
+
+    async def stream(self, messages, tools, *, model, signal):
+        self.requests.append(messages)
+        yield LLMEvent(type="text_delta", text="done")
+        yield LLMEvent(
+            type="response_end",
+            finish_reason="stop",
+            usage=Usage(input_tokens=1000, output_tokens=200, total_tokens=0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_reemit_uses_measured_total_when_endpoint_omits_total_tokens(
+    tmp_path,
+):
+    """A zero ``total_tokens`` must not drop the meter to zero after a response.
+
+    Some OpenAI-compatible endpoints omit ``total_tokens`` in streaming usage;
+    the measured total is then input+output, and the post-response re-emit must
+    report it rather than emit ``used=0`` (which the runtime would then copy
+    into its final status).
+    """
+    provider = _ZeroTotalUsageProvider()
+    runner, _, events = _runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.usage is not None and outcome.usage.total_tokens == 0
+    ctx_updates = [event for event in events if event.type == "context_updated"]
+    last = ctx_updates[-1]
+    assert last.payload["used_tokens"] == 1200
+    assert last.payload["used_tokens"] != 0
+    assert last.payload["estimated"] is False
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_uses_sum_when_outcome_total_is_zero(tmp_path):
+    """The final status must derive ``context_used`` from input+output when the
+    outcome's ``total_tokens`` is zero (omitted by the endpoint)."""
+    runtime = _runtime(
+        tmp_path,
+        lambda *_: _OutcomeRunner(
+            Usage(input_tokens=600, output_tokens=40, total_tokens=0)
+        ),
+    )
+    await runtime.submit("hello")
+    await _wait_idle(runtime)
+    assert runtime.status.context_used == 640
+    assert runtime.status.context_used != 0
+    assert runtime.status.context_estimated is False
+
+
+class _TurnGapUsageProvider:
+    """Turn 1 ends with a text-heavy response; turn 2 measures a fresh total.
+
+    The turn-2 opening estimate must count only the new turn's prompt, never
+    re-estimate turn 1's output (already inside turn 1's total), so the meter
+    never overshoots above turn 2's measured total and then drops.
+    """
+
+    def __init__(self):
+        self.responses = [
+            [
+                LLMEvent(type="text_delta", text="z" * 800),
+                LLMEvent(
+                    type="response_end",
+                    finish_reason="stop",
+                    usage=Usage(input_tokens=5, output_tokens=395, total_tokens=400),
+                ),
+            ],
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(
+                    type="response_end",
+                    finish_reason="stop",
+                    usage=Usage(input_tokens=300, output_tokens=200, total_tokens=500),
+                ),
+            ],
+        ]
+
+    async def stream(self, messages, tools, *, model, signal):
+        for event in self.responses.pop(0):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_turn_boundary_meter_never_recounts_previous_response_output(
+    tmp_path,
+):
+    """The meter must not rise above the next measured total and then drop.
+
+    Across two turns the ``context_updated`` sequence must be monotonic: turn
+    2's opening value sits between turn 1's final total and turn 2's measured
+    total (turn 1's large output is already inside turn 1's total, so it is not
+    re-estimated on turn 2's first step).
+    """
+    provider = _TurnGapUsageProvider()
+
+    def factory(store, policy, broker):
+        return AgentRunner(
+            provider=provider,
+            registry=ToolRegistry(),
+            executor=_RecordingExecutor(),
+            context_policy=policy,
+            store=store,
+            event_sink=broker,
+            system_prompt=_SYSTEM,
+            model="fake",
+            context_window=1000,
+            permission_mode="full",
+        )
+
+    runtime = _runtime(tmp_path, factory)
+    events = []
+
+    async def sink(event):
+        events.append(event)
+
+    runtime.subscribe(sink)
+    await runtime.submit("one")
+    await _wait_idle(runtime)
+    await runtime.submit("two")
+    await _wait_idle(runtime)
+
+    used = [
+        event.payload["used_tokens"]
+        for event in events
+        if event.type == "context_updated"
+    ]
+    assert used == sorted(used), "meter must never decrease across turns"
+    assert 400 in used  # turn 1's final re-emit reported its provider total
+    assert used[-1] == 500  # turn 2's measured total is the last word
+    # Turn 2's opening adds only the appended prompt to turn 1's total, so it
+    # must not overshoot the total turn 2's own request will measure.
+    assert 400 < used[-2] < 500
