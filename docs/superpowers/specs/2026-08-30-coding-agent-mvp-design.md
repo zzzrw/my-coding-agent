@@ -359,6 +359,7 @@ edit_file(path, old_text, new_text)
 remove_file(path)
 clear_directory(path)
 run_command(command, timeout_seconds=120)
+load_skill(skill)
 ```
 
 Rules:
@@ -391,6 +392,14 @@ Rules:
   ordinary tool failures do not crash the AgentRunner.
 - MVP executes calls sequentially. `is_parallel_safe` remains in the schema
   for a later read-only parallel executor.
+- `load_skill(skill)` (skills feature, 2026-09-02) returns the Markdown body of
+  a discovered skill by effective name from the two skills roots (workspace then
+  user-global, first wins); an unknown or unsafe name returns `ok=False` with
+  `unknown skill: <name>`. Content comes only from a resolved `SKILL.md` under
+  those roots and is bounded (truncated past ~16,000 chars with a note). It is a
+  read tool with no `path` argument, so it is allowed in every permission mode
+  without approval. Full semantics in
+  `2026-09-02-coding-agent-skills-support.md`.
 
 ## 9. Permission and Safety
 
@@ -586,7 +595,11 @@ never projected.
 
 The configured system prompt is prepended by `AgentRunner` after the history
 projection. It is not assigned a `turn_id` and is not included in turn
-grouping; the context policy always preserves it as the first message.
+grouping; the context policy always preserves it as the first message. Its body
+includes a deterministic `## Available skills` catalog (skills feature,
+2026-09-02): one `- name: description` line per discovered skill or nothing when
+none are installed; full SKILL.md bodies are never auto-injected. See
+`2026-09-02-coding-agent-skills-support.md`.
 
 ```python
 class ContextPolicy(Protocol):
@@ -831,6 +844,7 @@ Commands are local and do not enter model history:
 /permission default
 /permission workspace
 /permission full
+/skills
 /clear
 /quit
 ```
@@ -899,7 +913,10 @@ Non-code delivery must also satisfy the assignment notice:
    external tools adapted into ToolRegistry.
 2. Subagent S1: foreground `task` tool, isolated child Session, filtered tools,
    reused AgentRunner, final summary returned to parent.
-3. Skill loader from `.agents/skills/*/SKILL.md`.
+3. Skill loader from `.agents/skills/*/SKILL.md`. Built on 2026-09-02 as a
+   two-root (workspace + user-global) mechanism under
+   `.coding-agent/skills/*/SKILL.md`; see
+   `2026-09-02-coding-agent-skills-support.md`.
 4. Read-only parallel tool execution using `is_parallel_safe`.
 5. Pi-style LLM SummaryPolicy and externalized tool results.
 6. Session tree operations (`rewind`, `fork`) and branch summaries.

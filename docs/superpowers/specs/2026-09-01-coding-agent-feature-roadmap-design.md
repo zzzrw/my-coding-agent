@@ -416,6 +416,15 @@ inbox.
 - Inbox: rows reflect tool/approval records newest-first; `/inbox` dispatch.
 - Pilot tests for the new screens.
 
+### 5.6 Extension: skills surfacing (2026-09-02)
+
+The skills feature adds a `/skills` command and a "Skills" help-overlay section.
+It builds directly on this group's infrastructure — the `_COMMANDS` /
+`command_suggestions` command registry and `HelpScreen` / `help_overlay_text`
+help overlay — but is a separate mechanism designed and implemented under its
+own dated spec and plan: `2026-09-02-coding-agent-skills-support.md`. Implement
+it there, not inside W5.
+
 ## 6. W6 — Configuration (config file + first-run wizard)
 
 ### 6.1 Goal
@@ -450,6 +459,10 @@ no configuration anywhere, an interactive wizard walks the user through setup.
   interactively launchable (TTY); non-TTY still prints the guidance text.
 - **Approvals file reuse**: W2's `always` decisions persist to
   `<config_dir>/approvals.json` (same directory helper from `config/config.py`).
+- **Skills root reuse**: the user-global skills root is
+  `<config_dir>/skills/<skill-name>/SKILL.md`, i.e. the same `config_dir()`
+  helper; the skills feature is designed in
+  `2026-09-02-coding-agent-skills-support.md`.
 
 ### 6.4 Components
 
