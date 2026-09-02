@@ -758,6 +758,8 @@ class CodingAgentApp(App[None]):
             await self.runtime.set_permission(mode)
         except Exception as exc:  # noqa: BLE001
             self._show_notice(str(exc), level="error")
+            return
+        self._show_notice(f"permission mode changed to {mode}")
 
     async def _resume_prefix(self, prefix: str) -> None:
         try:

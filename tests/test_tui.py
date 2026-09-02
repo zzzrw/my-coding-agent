@@ -663,6 +663,26 @@ async def test_bare_permission_reports_current_mode_without_runtime_call() -> No
 
 
 @pytest.mark.asyncio
+async def test_permission_change_shows_confirmation_notice() -> None:
+    runtime = FakeRuntime()
+    app = CodingAgentApp(runtime=runtime, initial_state=make_state(policy="default"))
+
+    async with app.run_test() as pilot:
+        composer = pilot.app.query_one("#composer-input", TextArea)
+        composer.text = "/permission workspace"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runtime.permissions == ["workspace"]
+    assert app.state.policy == "workspace"
+    assert any(
+        row.kind == "system"
+        and "permission mode changed to workspace" in row.text
+        for row in app.state.transcript
+    )
+
+
+@pytest.mark.asyncio
 async def test_commands_are_rejected_while_run_is_active() -> None:
     runtime = FakeRuntime()
     app = CodingAgentApp(
