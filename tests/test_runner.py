@@ -56,7 +56,7 @@ def text_response(text="done"):
     ]
 
 
-def make_runner(tmp_path, provider, *, max_steps=20):
+def make_runner(tmp_path, provider, *, max_steps=None):
     store = SessionStore.create(
         tmp_path / "sessions",
         workspace=str(tmp_path),

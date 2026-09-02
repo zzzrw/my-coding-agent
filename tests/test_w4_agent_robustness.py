@@ -202,7 +202,7 @@ def _make_runner(
     executor,
     *,
     provider_idle_timeout_seconds=90.0,
-    max_steps=20,
+    max_steps=None,
 ):
     store = SessionStore.create(
         tmp_path / "sessions",
