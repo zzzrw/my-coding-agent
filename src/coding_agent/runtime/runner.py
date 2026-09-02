@@ -226,6 +226,7 @@ class AgentRunner:
                     system_prompt=self.system_prompt,
                     context_window=self.context_window,
                     usage=usage,
+                    tools=self.registry.schemas(),
                 )
             except Exception:  # noqa: BLE001 - persistence boundary normalizes errors
                 return TurnOutcome(reason="session_error", steps=step - 1, usage=usage)

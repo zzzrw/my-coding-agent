@@ -1,6 +1,7 @@
 from coding_agent.context.truncate import TruncatePolicy
 from coding_agent.runtime.models import Message, ToolCall, Usage
 from coding_agent.session.models import SessionMessage
+from coding_agent.tools.models import ToolSchema
 
 SYSTEM = Message(role="system", content="You are a coding agent.")
 
@@ -75,17 +76,101 @@ def test_usage_is_preferred_and_fallback_is_deterministic():
         history,
         system_prompt=SYSTEM,
         context_window=1000,
-        usage=Usage(input_tokens=123),
+        usage=Usage(input_tokens=120, output_tokens=3, total_tokens=123),
     )
     estimated_view = TruncatePolicy(budget=1000).prepare(
         history, system_prompt=SYSTEM, context_window=1000, usage=None
     )
+    # The displayed "used" is the full request total (input + output), not the
+    # input-only number the old meter reported.
     assert provider_view.used_tokens == 123
     assert provider_view.estimated is False
     assert estimated_view.used_tokens == TruncatePolicy.estimate_tokens(
         estimated_view.messages
     )
     assert estimated_view.estimated is True
+
+
+def test_used_prefers_provider_total_when_nothing_was_appended():
+    history = history_fixture()
+    usage = Usage(input_tokens=200, output_tokens=40, total_tokens=240)
+    view = TruncatePolicy(budget=1000).prepare(
+        history,
+        system_prompt=SYSTEM,
+        context_window=1000,
+        usage=usage,
+    )
+    # Every projected message was already part of the measured request, so the
+    # appended estimate is zero and the meter shows the provider total alone.
+    assert view.used_tokens == 240
+    assert view.estimated is False
+
+
+def test_used_adds_estimate_of_items_appended_since_the_response():
+    history = history_fixture()
+    appended = item(5, "t3", Message(role="user", content="y" * 2000))
+    usage = Usage(input_tokens=200, output_tokens=40, total_tokens=240)
+    view = TruncatePolicy(budget=1000).prepare(
+        history + [appended],
+        system_prompt=SYSTEM,
+        context_window=1000,
+        usage=usage,
+    )
+    current = [SYSTEM] + [entry.message for entry in history + [appended]]
+    expected = 240 + max(
+        0, TruncatePolicy.estimate_tokens(current) - usage.input_tokens
+    )
+    assert view.used_tokens == expected
+    assert view.estimated is False
+    assert view.used_tokens > 240
+
+
+def test_estimate_tokens_counts_cjk_and_emoji_per_codepoint():
+    text = "你好" * 40 + "🎉" * 10  # 80 CJK + 10 emoji codepoints
+    estimate = TruncatePolicy.estimate_tokens([Message(role="user", content=text)])
+    # Non-ASCII text costs about one token per codepoint (never fewer), and the
+    # structural overhead stays small: it must not inflate to chars/4 escapes.
+    assert estimate >= 90
+    assert estimate < 130
+
+
+def test_estimate_tokens_includes_tool_and_skill_schema_overhead():
+    messages = [Message(role="user", content="list the files")]
+    schema = ToolSchema(
+        name="read_file",
+        description="Read a file from disk.",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+        },
+        risk_level="read",
+    )
+    without_tools = TruncatePolicy.estimate_tokens(messages)
+    with_tools = TruncatePolicy.estimate_tokens(messages, tools=[schema])
+    # The schemas ride on the wire with the messages, so a tool-bearing request
+    # must never be estimated lower than a bare message estimate.
+    assert with_tools > without_tools
+
+
+def test_prepare_fallback_estimate_includes_tools():
+    history = history_fixture()
+    schema = ToolSchema(
+        name="read_file",
+        description="Read a file from disk.",
+        parameters={"type": "object"},
+        risk_level="read",
+    )
+    with_tools = TruncatePolicy(budget=1000).prepare(
+        history,
+        system_prompt=SYSTEM,
+        context_window=1000,
+        usage=None,
+        tools=[schema],
+    )
+    without_tools = TruncatePolicy(budget=1000).prepare(
+        history, system_prompt=SYSTEM, context_window=1000, usage=None
+    )
+    assert with_tools.used_tokens > without_tools.used_tokens
 
 
 def test_prepare_does_not_mutate_history():

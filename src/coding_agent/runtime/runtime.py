@@ -768,12 +768,15 @@ class AgentRuntime:
     async def _compact(self) -> None:
         history = self.store.project_messages(include_open_turn=True)
         policy = self._context_policy_factory()
+        registry = getattr(self._runner, "registry", None)
+        tools = registry.schemas() if registry is not None else None
         view = policy.prepare(
             history,
             system_prompt=self._system_prompt,
             context_window=self.store.header.context_window,
             usage=None,
             force=True,
+            tools=tools,
         )
         await self._publish(
             RuntimeEvent(
