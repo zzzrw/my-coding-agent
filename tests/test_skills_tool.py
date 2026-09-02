@@ -170,3 +170,51 @@ def test_load_skill_registered_with_app_registry():
 
     schemas = {s.name: s for s in _make_registry().schemas()}
     assert schemas["load_skill"].risk_level == "read"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_reports_skill_dir_and_bundled_files(tmp_path):
+    skill_root = _workspace_skills(tmp_path) / "demo"
+    (skill_root / "scripts").mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\ndescription: Do it.\n---\n\nRun scripts/run.sh first.", encoding="utf-8"
+    )
+    (skill_root / "scripts" / "run.sh").write_text(
+        "#!/bin/sh\necho hi\n", encoding="utf-8"
+    )
+    (skill_root / "reference.txt").write_text("notes\n", encoding="utf-8")
+    tool = make_load_skill_tool(user_root=tmp_path / "user")
+    context = ToolContext(workspace=tmp_path, permission_mode="full")
+
+    result = await tool.execute(
+        {"skill": "demo"}, context=context, signal=asyncio.Event()
+    )
+
+    assert result.ok is True
+    assert result.metadata["skill_dir"].endswith("demo")
+    assert result.metadata["files"] == ["reference.txt", "scripts/run.sh"]
+    assert result.metadata.get("files_truncated") is False
+
+
+@pytest.mark.asyncio
+async def test_load_skill_caps_bundled_file_listing(tmp_path):
+    skill_root = _workspace_skills(tmp_path) / "bulky"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\ndescription: Many files.\n---\n\nbody", encoding="utf-8"
+    )
+    for i in range(60):
+        (skill_root / f"file-{i:02d}.txt").write_text(str(i), encoding="utf-8")
+    tool = make_load_skill_tool(user_root=tmp_path / "user")
+    context = ToolContext(workspace=tmp_path, permission_mode="full")
+
+    result = await tool.execute(
+        {"skill": "bulky"}, context=context, signal=asyncio.Event()
+    )
+
+    assert result.ok is True
+    files = result.metadata["files"]
+    assert isinstance(files, list)
+    assert len(files) <= 50
+    assert files == sorted(files)
+    assert result.metadata.get("files_truncated") is True
