@@ -407,6 +407,13 @@ class AgentRunner:
                         message="repeated tool call without progress",
                     )
                     return TurnOutcome(reason="progress_loop", steps=step, usage=usage)
+        await self._emit(
+            "notice",
+            run_id,
+            turn_id,
+            level="warning",
+            message="reached the max_steps limit without a final answer",
+        )
         return TurnOutcome(
             reason="max_steps",
             final_text=final_text,

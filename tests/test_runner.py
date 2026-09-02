@@ -267,3 +267,22 @@ async def test_int_cap_still_bounded(tmp_path):
         "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
     )
     assert outcome.reason == "max_steps" and outcome.steps == 2
+
+
+@pytest.mark.asyncio
+async def test_max_steps_cap_emits_warning_notice_before_returning(tmp_path):
+    # A provider that never concludes, capped small: the outcome must be
+    # preceded by a warning notice (no silent exit, session 09f88d4d).
+    provider = ScriptedProvider([tool_response(), tool_response()])
+    runner, _, events, _ = make_runner(tmp_path, provider, max_steps=2)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "max_steps"
+    notices = [event for event in events if event.type == "notice"]
+    assert notices
+    last = notices[-1]
+    assert last.payload["level"] == "warning"
+    assert "max_steps" in last.payload["message"]
+    # The notice is the last event emitted before the outcome.
+    assert events.index(last) == len(events) - 1
