@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.session.models import ApprovalRequest
-from coding_agent.tui.reducer import reduce
+from coding_agent.tui.reducer import _command_text, reduce
 from coding_agent.tui.state import TuiState, initial_state
 
 
@@ -465,3 +465,31 @@ def test_tui_state_rejects_coerced_context_fields():
         TuiState(workspace="/tmp/project", model="fake", context_used="12")
     with pytest.raises(ValidationError):
         TuiState(workspace="/tmp/project", model="fake", context_estimated="false")
+
+
+def test_command_text_for_write_file_omits_content_payload() -> None:
+    label = _command_text({"path": "src/App.jsx", "content": "x" * 5000}, "write_file")
+    assert label == "path=src/App.jsx"
+    assert "content" not in label
+
+
+def test_command_text_for_edit_file_omits_old_and_new_text() -> None:
+    label = _command_text(
+        {"path": "a.py", "old_text": "old" * 200, "new_text": "new" * 200},
+        "edit_file",
+    )
+    assert label == "path=a.py"
+
+
+def test_command_text_read_file_keeps_small_args() -> None:
+    label = _command_text(
+        {"path": "big.py", "start_line": 10, "end_line": 20}, "read_file"
+    )
+    assert label == "path=big.py, start_line=10, end_line=20"
+
+
+def test_command_text_bounds_overlong_values() -> None:
+    label = _command_text({"command": "echo " + "a" * 500}, "run_command")
+    assert label is not None
+    assert len(label) <= 160
+    assert label.endswith("…")

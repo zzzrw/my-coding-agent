@@ -547,15 +547,33 @@ def _plan_arg_label(arguments: object, name: str) -> str | None:
     return None
 
 
+_TOOL_LABEL_MAX_CHARS = 160
+_TOOL_PAYLOAD_KEYS = {"content", "old_text", "new_text"}
+
+
 def _command_text(arguments: object, tool_name: str | None) -> str | None:
-    """Derive a compact tool-row command label from the call arguments."""
+    """Derive a compact tool-row command label from the call arguments.
+
+    Never embeds large payload values (write_file content, edit old/new text);
+    the label is bounded so a huge payload cannot bloat the transcript row.
+    """
     if not isinstance(arguments, dict):
         return None
     if tool_name == "run_command":
         command = arguments.get("command")
-        return command if isinstance(command, str) and command.strip() else None
-    pairs = [f"{key}={value}" for key, value in arguments.items()]
-    return ", ".join(pairs) if pairs else None
+        label = command if isinstance(command, str) and command.strip() else None
+    else:
+        pairs = [
+            f"{key}={value}"
+            for key, value in arguments.items()
+            if key not in _TOOL_PAYLOAD_KEYS
+        ]
+        label = ", ".join(pairs) if pairs else None
+    if label is None:
+        return None
+    if len(label) > _TOOL_LABEL_MAX_CHARS:
+        label = label[: _TOOL_LABEL_MAX_CHARS - 1].rstrip() + "…"
+    return label
 
 
 def _metadata(value: object) -> dict[str, object]:
