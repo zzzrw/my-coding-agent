@@ -29,6 +29,9 @@ from coding_agent.runtime.models import Message
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
+from coding_agent.skills.catalog import format_catalog
+from coding_agent.skills.discovery import discover_skills
+from coding_agent.skills.models import Skill
 from coding_agent.tools.executor import MutationJournal, ToolExecutor
 from coding_agent.tools.filesystem import (
     make_clear_directory_tool,
@@ -54,8 +57,19 @@ ONBOARDING_BASE_URL_ENVS = (
 )
 
 
-def build_system_prompt(workspace: Path, permission_mode: PermissionMode) -> Message:
-    """Return the system prompt embedding the safety boundaries for a run."""
+def build_system_prompt(
+    workspace: Path,
+    permission_mode: PermissionMode,
+    *,
+    skills: Sequence[Skill] = (),
+) -> Message:
+    """Return the system prompt embedding the safety boundaries for a run.
+
+    ``skills`` is the already-discovered skill catalog; when empty no catalog
+    section is emitted, so a skill-less run stays byte-identical to prior
+    builds. Only the one-line catalog is appended — never a SKILL.md body.
+    """
+    section = format_catalog(skills)
     return Message(
         role="system",
         content=(
@@ -77,6 +91,7 @@ def build_system_prompt(workspace: Path, permission_mode: PermissionMode) -> Mes
             '- A dev server started with "&" persists across tool calls; inspect it '
             "with pgrep and stop it with pkill or kill.\n"
             f"- Workspace root: {workspace}"
+            + (("\n\n" + section) if section else "")
         ),
     )
 
@@ -238,7 +253,10 @@ def create_app(
     registry = _make_registry()
     approval_policy = DefaultApprovalPolicy()
     journal = MutationJournal()
-    system_prompt = build_system_prompt(resolved_workspace, permission_mode)
+    skills = discover_skills(resolved_workspace)
+    system_prompt = build_system_prompt(
+        resolved_workspace, permission_mode, skills=skills
+    )
 
     def runner_factory(store, context_policy, broker):
         executor = ToolExecutor(
