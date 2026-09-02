@@ -99,3 +99,24 @@ async def test_render_state_incremental_snapshot_matches_full_render() -> None:
             [_assistant(0, "**a**"), _assistant(1, "b + delta"), _assistant(2, "c")]
         )
         assert view.renderable_text == incremental_text
+
+
+@pytest.mark.asyncio
+async def test_render_state_grows_changed_row_height() -> None:
+    # An in-place update of a growing message must re-layout the row (refresh
+    # with layout=True); a repaint-only refresh would keep the original height
+    # and clip streamed content to one line.
+    app = _make_app()
+    async with app.run_test() as pilot:
+        view = app.query_one("#transcript", TranscriptView)
+        await view.render_state([_assistant(0, "one line")])
+        await pilot.pause()
+        row = next(iter(view.query(TranscriptRow)))
+        assert row.region.height == 1
+
+        await view.render_state(
+            [_assistant(0, "\n".join(f"line {i}" for i in range(20)))]
+        )
+        await pilot.pause()
+        row_after = next(iter(view.query(TranscriptRow)))
+        assert row_after.region.height == 20

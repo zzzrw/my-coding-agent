@@ -141,7 +141,10 @@ class TranscriptView(VerticalScroll):
                 row._renderable = TranscriptRow._row_renderable(
                     item, spinner_frame, now
                 )
-                row.refresh()
+                # layout=True: a growing message must re-compute the row height;
+                # a repaint-only refresh keeps the original 1-line height and
+                # clips the streamed content.
+                row.refresh(layout=True)
         self._rendered_text = "\n".join(
             _row_text(item, spinner_frame=spinner_frame, now=now) for item in items
         )
