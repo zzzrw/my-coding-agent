@@ -246,6 +246,11 @@ class SessionStore:
                 and record.payload.get("complete") is True
             ):
                 msg = Message.model_validate(record.payload["message"])
+                if not msg.content and not msg.tool_calls:
+                    # An empty assistant turn (no text, no tool calls) must never
+                    # enter the LLM context: providers reject it with
+                    # "content or tool calls is empty" 400s on the next request.
+                    continue
                 idx = len(projected)
                 projected.append(
                     SessionMessage(

@@ -45,6 +45,50 @@ def test_partial_tool_results_discard_entire_assistant_group(tmp_path):
     assert store.project_messages() == []
 
 
+def test_empty_assistant_message_is_excluded_from_projection(tmp_path):
+    store = _store(tmp_path)
+    store.append_new(
+        "assistant_message",
+        {
+            "message": Message(role="assistant", content=None, tool_calls=[]),
+            "complete": True,
+        },
+        turn_id="t1",
+    )
+    store.append_new("turn_end", {"reason": "completed"}, turn_id="t1")
+
+    # An empty assistant turn (no text, no tool calls) must never enter the LLM
+    # context: providers reject it with "content or tool calls is empty" 400s on
+    # the next request.
+    assert store.project_messages() == []
+
+
+def test_empty_content_with_tool_calls_is_still_projected(tmp_path):
+    store = _store(tmp_path)
+    assistant = Message(
+        role="assistant",
+        tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})],
+    )
+    store.append_new(
+        "assistant_message", {"message": assistant, "complete": True}, turn_id="t1"
+    )
+    store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="c1", tool_name="read_file", ok=True, content="a"
+            )
+        },
+        turn_id="t1",
+    )
+    store.append_new("turn_end", {"reason": "completed"}, turn_id="t1")
+
+    projected = store.project_messages()
+    assert len(projected) == 2
+    assert projected[0].message.role == "assistant"
+    assert projected[0].message.tool_calls[0].name == "read_file"
+
+
 def test_partial_tool_results_keep_only_complete_groups(tmp_path):
     store = _store(tmp_path)
     complete = Message(

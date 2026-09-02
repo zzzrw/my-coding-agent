@@ -11,6 +11,7 @@ from coding_agent.context.policy import ContextPolicy
 from coding_agent.llm.protocol import LLMProvider
 from coding_agent.runtime.events import RuntimeEvent
 from coding_agent.runtime.models import LLMEvent, Message, ToolCall, TurnOutcome, Usage
+from coding_agent.session.models import SessionRecord
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.executor import ToolExecutor
 from coding_agent.tools.models import ToolResult
@@ -280,15 +281,20 @@ class AgentRunner:
             assistant = Message(
                 role="assistant", content=final_text or None, tool_calls=parsed_calls
             )
-            try:
-                assistant_record = self.store.append_new(
-                    "assistant_message",
-                    {"message": assistant, "complete": True},
-                    run_id=run_id,
-                    turn_id=turn_id,
-                )
-            except Exception:  # noqa: BLE001 - persistence boundary normalizes errors
-                return TurnOutcome(reason="session_error", steps=step, usage=usage)
+            # Never persist a completely empty assistant turn (no text, no tool
+            # calls): it would poison the LLM context for the next request with
+            # "content or tool calls is empty" 400s.
+            assistant_record: SessionRecord | None = None
+            if final_text or parsed_calls:
+                try:
+                    assistant_record = self.store.append_new(
+                        "assistant_message",
+                        {"message": assistant, "complete": True},
+                        run_id=run_id,
+                        turn_id=turn_id,
+                    )
+                except Exception:  # noqa: BLE001 - persistence boundary normalizes errors
+                    return TurnOutcome(reason="session_error", steps=step, usage=usage)
             await self._emit(
                 "assistant_finished",
                 run_id,
