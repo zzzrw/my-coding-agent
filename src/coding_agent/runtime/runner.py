@@ -198,10 +198,18 @@ class AgentRunner:
         run_id: str,
         turn_id: str,
         signal: asyncio.Event,
+        usage: Usage | None = None,
     ) -> TurnOutcome:
+        """Run one agent turn.
+
+        ``usage`` seeds the meter with the previous full-request total (from a
+        prior turn or an injected fake) so the first step of every turn reports
+        provider usage rather than falling back to a pure estimate. It is only
+        a starting point: any usage reported by the provider this turn replaces
+        it.
+        """
         del prompt
         turn_started = time.monotonic()
-        usage: Usage | None = None
         final_text = ""
         signature_window: deque[str] = deque(maxlen=_REPETITION_WINDOW)
         step_source = (
@@ -387,6 +395,19 @@ class AgentRunner:
                 usage=usage.model_dump() if usage else None,
                 finish_reason=finish_reason,
             )
+            # A response is the only place real usage is measured. Re-emit the
+            # meter now with that full-request total so the UI updates without
+            # waiting for a later request (a one-response turn would otherwise
+            # stay on its opening estimate).
+            if usage is not None:
+                await self._emit(
+                    "context_updated",
+                    run_id,
+                    turn_id,
+                    used_tokens=usage.total_tokens,
+                    context_window=self.context_window,
+                    estimated=False,
+                )
 
             if not parsed_calls:
                 return TurnOutcome(

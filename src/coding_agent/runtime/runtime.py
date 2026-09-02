@@ -12,7 +12,13 @@ from coding_agent.llm.protocol import LLMProvider
 from coding_agent.policy.approval import ApprovalPolicy, PermissionMode
 from coding_agent.policy.memory import Scope
 from coding_agent.runtime.events import EventSink, RuntimeEvent
-from coding_agent.runtime.models import Message, RuntimeStatus, ToolCall, TurnOutcome
+from coding_agent.runtime.models import (
+    Message,
+    RuntimeStatus,
+    ToolCall,
+    TurnOutcome,
+    Usage,
+)
 from coding_agent.runtime.runner import AgentRunner
 from coding_agent.session.models import ApprovalRequest, SessionRecord, SessionSummary
 from coding_agent.session.store import SessionStore
@@ -30,6 +36,29 @@ def _projected_tool_status(result: ToolResult) -> str:
 
 _TOOL_LABEL_MAX_CHARS = 160
 _TOOL_PAYLOAD_KEYS = {"content", "old_text", "new_text"}
+
+
+def _latest_persisted_usage(store: SessionStore) -> Usage | None:
+    """Recover the newest full-request usage from a persisted session.
+
+    ``turn_end`` records carry the completed outcome (including provider
+    usage), so resuming a session can seed the meter with the real last total
+    instead of falling back to an estimate until the next request. Records are
+    scanned newest-first; the first that carries a usage total wins.
+    """
+    for record in reversed(store.records()):
+        if record.type != "turn_end":
+            continue
+        outcome = record.payload.get("outcome")
+        if not isinstance(outcome, dict):
+            continue
+        usage = outcome.get("usage")
+        if isinstance(usage, dict) and (usage.get("total_tokens") or 0) > 0:
+            try:
+                return Usage.model_validate(usage)
+            except Exception:  # noqa: BLE001 - tolerate malformed persisted usage
+                return None
+    return None
 
 
 def _projected_command(call: ToolCall | None) -> str | None:
@@ -235,6 +264,7 @@ class AgentRuntime:
         self._subscribers: list[EventSink] = []
         self._status = RuntimeStatus()
         self._last_outcome: TurnOutcome | None = None
+        self._usage_seed: Usage | None = None
         self._task: asyncio.Task[None] | None = None
         self._submit_in_progress = False
         self._operation_in_progress = False
@@ -394,21 +424,35 @@ class AgentRuntime:
         turn_closed = False
         try:
             outcome = await self._runner.run_turn(
-                prompt, run_id=run_id, turn_id=turn_id, signal=signal
+                prompt,
+                run_id=run_id,
+                turn_id=turn_id,
+                signal=signal,
+                usage=self._usage_seed,
             )
             if run_id in self._forced_aborts:
                 return
             self._last_outcome = outcome
+            self._usage_seed = outcome.usage
+            # The meter is authoritative from the outcome's provider usage: the
+            # full-request total, not a stale value preserved across turns.
+            final_usage = outcome.usage
+            if final_usage is not None and final_usage.total_tokens > 0:
+                context_used = final_usage.total_tokens
+                context_estimated = False
+            else:
+                context_used = self._status.context_used
+                context_estimated = self._status.context_estimated
             self._status = RuntimeStatus(
                 status="aborted"
                 if outcome.reason == "aborted"
                 else ("error" if outcome.reason.endswith("error") else "idle"),
-                usage=outcome.usage,
+                usage=final_usage,
                 run_id=run_id,
                 turn_id=turn_id,
-                context_used=self._status.context_used,
+                context_used=context_used,
                 context_window=self._status.context_window,
-                context_estimated=self._status.context_estimated,
+                context_estimated=context_estimated,
             )
             self.store.append_new(
                 "turn_end",
@@ -558,6 +602,7 @@ class AgentRuntime:
             )
             self._permission_mode = "workspace"
             self._last_outcome = None
+            self._usage_seed = None
             self._status = RuntimeStatus(
                 context_window=self.store.header.context_window
             )
@@ -589,8 +634,14 @@ class AgentRuntime:
             self._model = self.store.header.model
             self._permission_mode = "workspace"
             self._last_outcome = None
+            self._usage_seed = _latest_persisted_usage(self.store)
+            restored_usage = self._usage_seed
             self._status = RuntimeStatus(
-                context_window=self.store.header.context_window
+                context_window=self.store.header.context_window,
+                context_used=(
+                    restored_usage.total_tokens if restored_usage is not None else 0
+                ),
+                context_estimated=False,
             )
             self._runner = self._make_runner()
             history = [
@@ -683,6 +734,7 @@ class AgentRuntime:
             self.store = new_store
             self._permission_mode = "workspace"
             self._last_outcome = None
+            self._usage_seed = None
             self._status = RuntimeStatus(context_window=new_store.header.context_window)
             self._runner = self._make_runner()
             await self._publish(

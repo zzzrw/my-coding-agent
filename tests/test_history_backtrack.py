@@ -27,7 +27,7 @@ class _FakeRuntime:
 
 
 class _NoopRunner:
-    async def run_turn(self, prompt, *, run_id, turn_id, signal):
+    async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
         return TurnOutcome(reason="completed", final_text=prompt, steps=1)
 
 

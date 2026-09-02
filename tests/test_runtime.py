@@ -16,7 +16,7 @@ class BlockingRunner:
     def __init__(self, gate=None):
         self.gate = gate or asyncio.Event()
 
-    async def run_turn(self, prompt, *, run_id, turn_id, signal):
+    async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
         await self.gate.wait()
         return TurnOutcome(reason="completed", final_text=prompt, steps=1)
 
@@ -25,8 +25,10 @@ class EventRunner:
     def __init__(self):
         self.event_sink = None
         self.permission_mode = "default"
+        self.last_usage = None
 
-    async def run_turn(self, prompt, *, run_id, turn_id, signal):
+    async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
+        self.last_usage = usage
         await self.event_sink(
             RuntimeEvent(
                 type="context_updated",
@@ -165,7 +167,7 @@ async def test_forced_abort_persists_one_terminal_event_and_blocks_late_completi
         event_sink = None
         permission_mode = "default"
 
-        async def run_turn(self, prompt, *, run_id, turn_id, signal):
+        async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
             try:
                 await release.wait()
             except asyncio.CancelledError:
@@ -216,7 +218,7 @@ async def test_forced_abort_releases_runtime_for_a_follow_up_run(tmp_path, monke
         event_sink = None
         permission_mode = "default"
 
-        async def run_turn(self, prompt, *, run_id, turn_id, signal):
+        async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
             try:
                 await release.wait()
             except asyncio.CancelledError:

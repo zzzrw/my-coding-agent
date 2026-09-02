@@ -219,7 +219,7 @@ async def test_runtime_redacts_secrets_before_persist_and_emit(tmp_path):
         event_sink = None
         permission_mode = "default"
 
-        async def run_turn(self, prompt, *, run_id, turn_id, signal):
+        async def run_turn(self, prompt, *, run_id, turn_id, signal, usage=None):
             raise RuntimeError(
                 "connection refused https://bob:hunter2@host/v1?key=sekrit-42"
             )
