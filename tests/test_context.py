@@ -152,6 +152,51 @@ def test_estimate_tokens_includes_tool_and_skill_schema_overhead():
     assert with_tools > without_tools
 
 
+def test_auto_compaction_fires_at_headroom_not_full_window():
+    # window 20000 => reserve max(12000, 5%) = 12000 => compact when the
+    # estimate passes 8000, well before the 20000-token window would overflow.
+    history = [
+        item(0, "t1", Message(role="user", content="x" * 30000)),
+        item(1, "t2", Message(role="user", content="y" * 8000)),
+    ]
+    view = TruncatePolicy().prepare(
+        history, system_prompt=SYSTEM, context_window=20000, usage=None
+    )
+    assert view.compacted is True
+    assert view.removed_turns == 1
+    assert not any("x" * 30000 in (message.content or "") for message in view.messages)
+    assert any("y" * 8000 in (message.content or "") for message in view.messages)
+
+
+def test_auto_compaction_holds_below_headroom_threshold():
+    history = [
+        item(0, "t1", Message(role="user", content="a" * 20000)),
+        item(1, "t2", Message(role="user", content="b" * 2000)),
+    ]
+    view = TruncatePolicy().prepare(
+        history, system_prompt=SYSTEM, context_window=20000, usage=None
+    )
+    # ~5500 tokens of messages is comfortably under the 8000 headroom threshold:
+    # nothing is dropped even though the estimate already exceeds the old
+    # chars/4 feel for the window.
+    assert view.compacted is False
+    assert len(view.messages) == len(history) + 1
+
+
+def test_small_window_still_keeps_the_current_turn():
+    # A tiny window cannot reserve 12000 tokens of headroom; compaction must
+    # not race below the current turn even when that turn alone overflows.
+    history = [
+        item(0, "t1", Message(role="user", content="z" * 20000)),
+        item(1, "t2", Message(role="user", content="w" * 20000)),
+    ]
+    view = TruncatePolicy().prepare(
+        history, system_prompt=SYSTEM, context_window=1000, usage=None
+    )
+    assert view.removed_turns == 1
+    assert any("w" * 20000 in (message.content or "") for message in view.messages)
+
+
 def test_prepare_fallback_estimate_includes_tools():
     history = history_fixture()
     schema = ToolSchema(

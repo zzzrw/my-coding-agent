@@ -75,9 +75,36 @@ def _wire_tool(schema: ToolSchema) -> dict:
     }
 
 
+_HEADROOM_MIN = 12_000
+_HEADROOM_FRACTION = 0.05
+
+
 class TruncatePolicy:
     def __init__(self, budget: int | None = None) -> None:
         self.budget = budget
+
+    @staticmethod
+    def _compaction_threshold(
+        budget: int | None, context_window: int
+    ) -> tuple[int, int]:
+        """Return ``(capacity, threshold)`` used by :meth:`prepare`.
+
+        ``capacity`` is the hard ceiling an overflow is reported against. The
+        auto-compaction ``threshold`` reserves headroom under the operating
+        window (``max(12000, window*0.05)``) so compaction fires before the next
+        request can overflow -- a new prompt or tool result can push a request
+        past the previous response's usage. When a budget was configured it is
+        authoritative and no headroom is reserved; when the window is too small
+        to reserve any meaningful headroom the threshold stays at the full
+        window, so compaction never races below the current turn.
+        """
+        capacity = min(budget or context_window, context_window)
+        threshold = capacity
+        if budget is None:
+            reserve = max(_HEADROOM_MIN, int(context_window * _HEADROOM_FRACTION))
+            if reserve < context_window:
+                threshold = context_window - reserve
+        return capacity, threshold
 
     @staticmethod
     def estimate_tokens(
@@ -108,7 +135,7 @@ class TruncatePolicy:
         force: bool = False,
         tools: list[ToolSchema] | None = None,
     ) -> ContextView:
-        limit = min(self.budget or context_window, context_window)
+        capacity, threshold = self._compaction_threshold(self.budget, context_window)
         groups: OrderedDict[str, list[Message]] = OrderedDict()
         for item in history:
             key = item.turn_id or f"record:{item.record_id}"
@@ -130,7 +157,7 @@ class TruncatePolicy:
 
         removed = 0
         while len(retained_keys) > 1 and (
-            must_compact or self.estimate_tokens(base_messages, tools=tools) > limit
+            must_compact or self.estimate_tokens(base_messages, tools=tools) > threshold
         ):
             retained_keys.pop(0)
             removed += 1
@@ -156,7 +183,7 @@ class TruncatePolicy:
             used_tokens = provider_total + max(0, appended)
         else:
             used_tokens = estimate
-        overflow = used_tokens > limit and len(retained_keys) <= 1
+        overflow = used_tokens > capacity and len(retained_keys) <= 1
         return ContextView(
             messages=base_messages,
             used_tokens=used_tokens,
