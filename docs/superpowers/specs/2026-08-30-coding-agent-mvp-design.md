@@ -299,7 +299,7 @@ class AgentRuntime:
 
 The constructor creates a new session when no session is supplied. `new_session`
 closes the current idle view, creates a fresh session, resets the visible
-transcript and context policy, and starts with `default` permission.
+transcript and context policy, and starts with `workspace` permission.
 `list_sessions` returns newest-updated sessions first. A session selector uses
 this method; `resume` accepts a full id or a unique id prefix and rejects an
 ambiguous prefix.
@@ -645,7 +645,7 @@ contains `strategy`, `removed_turn_ids`, `retained_turn_ids`,
 in the durable log.
 
 Resume restores workspace, model, and projected messages, but starts with
-`default` permission and no active process, approval, or tool execution.
+`workspace` permission and no active process, approval, or tool execution.
 An open final turn is marked interrupted and is not replayed.
 
 ## 11. Runtime Events and TUI
