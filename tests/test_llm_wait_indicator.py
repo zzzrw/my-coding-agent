@@ -68,6 +68,19 @@ def test_pending_row_with_text_renders_text_not_placeholder() -> None:
     assert _row_text(item) == "hello"
 
 
+def test_pending_row_prefers_draft_caption_over_thinking() -> None:
+    item = TranscriptItem(
+        kind="assistant",
+        item_id="m1",
+        pending=True,
+        started_at=100.0,
+        draft_caption="drafting write_file · 40 chars",
+    )
+    text = _row_text(item, spinner_frame=2, now=105.0)
+    assert "drafting write_file · 40 chars" in text
+    assert "thinking" not in text
+
+
 def test_normal_assistant_row_is_unchanged() -> None:
     item = TranscriptItem(kind="assistant", item_id="m1", text="hello")
     assert _row_text(item) == "hello"

@@ -99,6 +99,35 @@ def partition_waves(
     return waves
 
 
+_DRAFT_TARGET_MAX_CHARS = 80
+
+
+def _draft_target(name: str, arguments: str) -> str | None:
+    """Best-effort bounded human target for a drafting tool call, or None.
+
+    Only ``run_command``'s command is surfaced (capped), so live drafting
+    progress stays readable without ever exposing raw argument content. The
+    accumulated arguments are only parsed when they already form valid JSON.
+    """
+    if name != "run_command":
+        return None
+    try:
+        parsed = json.loads(arguments or "{}")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    command = parsed.get("command")
+    if not isinstance(command, str):
+        return None
+    command = command.strip()
+    if not command:
+        return None
+    if len(command) > _DRAFT_TARGET_MAX_CHARS:
+        command = command[: _DRAFT_TARGET_MAX_CHARS - 1].rstrip() + "…"
+    return command
+
+
 def _mutation_key(call: ToolCall, workspace: Path) -> str | None:
     """Return the resolved-path mutation key for a call, or None when it has none."""
     if call.name not in _MUTATION_TOOLS:
@@ -246,6 +275,23 @@ class AgentRunner:
                             current["name"] = event.tool_name
                         if event.arguments_delta:
                             current["arguments"] += event.arguments_delta
+                            if current["name"]:
+                                # Ephemeral live-draft notice for the UI: a tool
+                                # name plus the running length of the accumulated
+                                # arguments. It never carries argument content and
+                                # is never persisted.
+                                await self._emit(
+                                    "tool_draft",
+                                    run_id,
+                                    turn_id,
+                                    message_id=message_id,
+                                    tool_call_id=call_id,
+                                    tool_name=current["name"],
+                                    args_len=len(current["arguments"]),
+                                    target=_draft_target(
+                                        current["name"], current["arguments"]
+                                    ),
+                                )
                     elif event.type in {"tool_call_end", "response_end"}:
                         if event.finish_reason:
                             finish_reason = event.finish_reason

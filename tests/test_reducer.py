@@ -493,3 +493,120 @@ def test_command_text_bounds_overlong_values() -> None:
     assert label is not None
     assert len(label) <= 160
     assert label.endswith("…")
+
+
+def test_tool_draft_caption_grows_then_resolution_clears_it() -> None:
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event("assistant_started", {"message_id": "m1"}),
+    )
+    state = reduce(
+        state,
+        event(
+            "tool_draft",
+            {
+                "message_id": "m1",
+                "tool_call_id": "c1",
+                "tool_name": "write_file",
+                "args_len": 12,
+            },
+        ),
+    )
+    row = next(item for item in state.transcript if item.kind == "assistant")
+    assert row.draft_caption == "drafting write_file · 12 chars"
+
+    state = reduce(
+        state,
+        event(
+            "tool_draft",
+            {
+                "message_id": "m1",
+                "tool_call_id": "c1",
+                "tool_name": "write_file",
+                "args_len": 40,
+            },
+        ),
+    )
+    row = next(item for item in state.transcript if item.kind == "assistant")
+    assert row.draft_caption == "drafting write_file · 40 chars"
+
+    state = reduce(state, event("assistant_finished", {"message_id": "m1"}))
+    state = reduce(
+        state,
+        event(
+            "tool_started",
+            {
+                "tool_call_id": "c1",
+                "tool_name": "write_file",
+                "arguments": {"path": "main.py", "content": "x" * 5},
+            },
+        ),
+    )
+    state = reduce(
+        state,
+        event(
+            "tool_finished",
+            {
+                "tool_call_id": "c1",
+                "tool_name": "write_file",
+                "ok": True,
+                "content": "saved",
+            },
+        ),
+    )
+    rows = state.transcript
+    assert not any("drafting" in (item.draft_caption or "") for item in rows)
+    assistant = next(item for item in rows if item.kind == "assistant")
+    assert assistant.draft_caption is None
+    assert assistant.pending is False
+    tools = [item for item in rows if item.kind == "tool"]
+    assert len(tools) == 1
+    assert tools[0].tool_call_id == "c1"
+    assert tools[0].text == "saved"
+
+
+def test_tool_draft_ignored_once_assistant_row_has_prose() -> None:
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event("assistant_started", {"message_id": "m1"}),
+    )
+    state = reduce(
+        state, event("assistant_delta", {"message_id": "m1", "text": "hello"})
+    )
+    state = reduce(
+        state,
+        event(
+            "tool_draft",
+            {
+                "message_id": "m1",
+                "tool_call_id": "c1",
+                "tool_name": "write_file",
+                "args_len": 90,
+            },
+        ),
+    )
+    row = next(item for item in state.transcript if item.kind == "assistant")
+    assert row.draft_caption is None
+    assert row.text == "hello"
+
+
+def test_tool_draft_run_command_surfaces_bounded_human_target() -> None:
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event("assistant_started", {"message_id": "m1"}),
+    )
+    state = reduce(
+        state,
+        event(
+            "tool_draft",
+            {
+                "message_id": "m1",
+                "tool_call_id": "c1",
+                "tool_name": "run_command",
+                "args_len": 8,
+                "target": "ls -la",
+            },
+        ),
+    )
+    row = next(item for item in state.transcript if item.kind == "assistant")
+    assert row.draft_caption == "drafting run_command · ls -la"

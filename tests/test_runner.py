@@ -126,6 +126,40 @@ async def test_completed_tool_call_survives_usage_only_response_end(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_tool_draft_events_report_growing_argument_lengths(tmp_path):
+    arguments = '{"path":"main.py","content":"hi"}'
+    response = [
+        LLMEvent(type="tool_call_start", tool_call_id="c1", tool_name="write_file"),
+        LLMEvent(
+            type="tool_call_delta",
+            tool_call_id="c1",
+            arguments_delta=arguments[:10],
+        ),
+        LLMEvent(
+            type="tool_call_delta",
+            tool_call_id="c1",
+            arguments_delta=arguments[10:],
+        ),
+        LLMEvent(type="tool_call_end", finish_reason="tool_calls"),
+    ]
+    provider = ScriptedProvider([response, text_response("done")])
+    runner, _, events, executor = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert len(executor.calls) == 1
+    drafts = [event for event in events if event.type == "tool_draft"]
+    assert len(drafts) == 2
+    assert [event.payload["args_len"] for event in drafts] == sorted(
+        event.payload["args_len"] for event in drafts
+    )
+    assert drafts[0].payload["args_len"] < drafts[1].payload["args_len"]
+    assert all(event.payload["tool_name"] == "write_file" for event in drafts)
+    assert all(event.payload["message_id"] for event in drafts)
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_is_returned_to_model_without_execution(tmp_path):
     provider = ScriptedProvider([tool_response('{"path":'), text_response("invalid")])
     runner, store, _, executor = make_runner(tmp_path, provider)

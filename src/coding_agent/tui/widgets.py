@@ -1148,10 +1148,16 @@ def markdown_to_text(text: str) -> Text:
 
 
 def _pending_text(item: TranscriptItem, spinner_frame: int, now: float) -> str:
-    """Placeholder for an assistant row that has not received its first token."""
+    """Placeholder for an assistant row that has not received its first token.
+
+    When the model is mid way through generating a tool call the row carries an
+    ephemeral ``draft_caption`` (e.g. "drafting write_file · 1234 chars") which
+    is shown in place of the generic thinking placeholder.
+    """
     frame = SPINNER_FRAMES[spinner_frame % len(SPINNER_FRAMES)]
     elapsed = max(0, int(now - (item.started_at or now)))
-    return f"{frame} thinking… ({elapsed}s)"
+    label = item.draft_caption or "thinking…"
+    return f"{frame} {label} ({elapsed}s)"
 
 
 def _row_text(item: TranscriptItem, *, spinner_frame: int = 0, now: float = 0.0) -> str:

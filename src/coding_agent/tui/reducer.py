@@ -56,6 +56,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 pending_approval=None,
                 run_started_at=None,
             )
+            transcript = _strip_draft_captions(transcript)
 
     elif event.type == "run_error":
         if _event_matches_active_run(state, event):
@@ -67,6 +68,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 pending_approval=None,
                 run_started_at=None,
             )
+            transcript = _strip_draft_captions(transcript)
             _append_system(
                 transcript, payload.get("message", "runtime error"), level="error"
             )
@@ -116,6 +118,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                         "text": row.text + _text(payload.get("text")),
                         "pending": False,
                         "started_at": None,
+                        "draft_caption": None,
                     }
                 )
 
@@ -127,10 +130,26 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
                 transcript.append(TranscriptItem(kind="assistant", item_id=message_id))
             else:
                 row = transcript[index]
+                update: dict[str, Any] = {}
                 if row.pending:
-                    transcript[index] = row.model_copy(
-                        update={"pending": False, "started_at": None}
-                    )
+                    update = {"pending": False, "started_at": None}
+                if row.draft_caption is not None or "pending" in update:
+                    update["draft_caption"] = None
+                if update:
+                    transcript[index] = row.model_copy(update=update)
+
+    elif event.type == "tool_draft":
+        message_id = _non_empty_str(payload.get("message_id"))
+        if message_id:
+            index = _find_assistant(transcript, message_id)
+            if index is not None:
+                row = transcript[index]
+                if row.pending and not row.text:
+                    caption = _draft_caption(payload)
+                    if caption and caption != row.draft_caption:
+                        transcript[index] = row.model_copy(
+                            update={"draft_caption": caption}
+                        )
 
     elif event.type == "tool_started":
         call_id = _non_empty_str(payload.get("tool_call_id"))
@@ -549,6 +568,41 @@ def _plan_arg_label(arguments: object, name: str) -> str | None:
 
 _TOOL_LABEL_MAX_CHARS = 160
 _TOOL_PAYLOAD_KEYS = {"content", "old_text", "new_text"}
+_DRAFT_TARGET_MAX_CHARS = 80
+
+
+def _draft_caption(payload: dict[str, Any]) -> str | None:
+    """Build the ephemeral live caption for a drafting tool call.
+
+    Returns ``None`` when nothing useful can be shown. ``run_command`` prefers
+    a bounded human target (the command) when one is supplied; every other
+    tool shows the running length of its accumulated arguments. Raw argument
+    content is never rendered.
+    """
+    tool = payload.get("tool_name")
+    tool = tool if isinstance(tool, str) and tool else "tool"
+    if tool == "run_command":
+        target = payload.get("target")
+        if isinstance(target, str) and target.strip():
+            target = target.strip()
+            if len(target) > _DRAFT_TARGET_MAX_CHARS:
+                target = target[: _DRAFT_TARGET_MAX_CHARS - 1].rstrip() + "…"
+            return f"drafting run_command · {target}"
+    count = payload.get("args_len")
+    count = count if isinstance(count, int) and not isinstance(count, bool) else 0
+    return f"drafting {tool} · {count} chars"
+
+
+def _strip_draft_captions(rows: list[TranscriptItem]) -> list[TranscriptItem]:
+    """Clear every ephemeral draft caption, returning ``rows`` untouched when empty."""
+    if not any(row.draft_caption is not None for row in rows):
+        return rows
+    return [
+        row.model_copy(update={"draft_caption": None})
+        if row.draft_caption is not None
+        else row
+        for row in rows
+    ]
 
 
 def _command_text(arguments: object, tool_name: str | None) -> str | None:

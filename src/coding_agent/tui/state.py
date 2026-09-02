@@ -25,6 +25,11 @@ class TranscriptItem(BaseModel):
     exit_code: int | None = None
     retries: int | None = None
     expanded: bool = False
+    # Ephemeral UI-only live caption shown on a pending, empty assistant row
+    # while a tool call is still being generated (e.g. "drafting write_file ·
+    # 1234 chars"). Never persisted to the session file and always cleared
+    # before the row settles, so it never appears in a final transcript.
+    draft_caption: str | None = None
 
 
 class TuiState(BaseModel):

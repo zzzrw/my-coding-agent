@@ -16,6 +16,7 @@ RuntimeEventType = Literal[
     "assistant_delta",
     "assistant_finished",
     "assistant_message",
+    "tool_draft",
     "tool_started",
     "tool_output_delta",
     "tool_finished",
