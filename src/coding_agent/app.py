@@ -31,6 +31,7 @@ from coding_agent.runtime.runtime import AgentRuntime
 from coding_agent.session.store import SessionStore
 from coding_agent.tools.executor import MutationJournal, ToolExecutor
 from coding_agent.tools.filesystem import (
+    make_clear_directory_tool,
     make_edit_file_tool,
     make_read_file_tool,
     make_remove_file_tool,
@@ -147,6 +148,7 @@ def _make_registry() -> ToolRegistry:
         make_write_file_tool(),
         make_edit_file_tool(),
         make_remove_file_tool(),
+        make_clear_directory_tool(),
         make_run_command_tool(),
     ):
         registry.register(tool)

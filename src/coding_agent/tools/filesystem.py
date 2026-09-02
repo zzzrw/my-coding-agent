@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,10 @@ class _EditArgs(BaseModel):
 
 
 class _RemoveFileArgs(BaseModel):
+    path: str
+
+
+class _ClearDirectoryArgs(BaseModel):
     path: str
 
 
@@ -214,6 +219,40 @@ class _RemoveFileTool:
             return _result(self.schema.name, False, error=str(exc))
 
 
+class _ClearDirectoryTool:
+    args_model = _ClearDirectoryArgs
+    schema = ToolSchema(
+        name="clear_directory",
+        description="Remove all contents of a directory, keeping the directory",
+        parameters=_ClearDirectoryArgs.model_json_schema(),
+        risk_level="mutate_file",
+    )
+
+    async def execute(self, arguments, *, context, signal):
+        try:
+            args = self.args_model.model_validate(arguments)
+            path = resolve_tool_path(
+                context.workspace,
+                args.path,
+                permission_mode=context.permission_mode,
+                allow_outside_once=context.allow_outside_once,
+            )
+            if signal.is_set():
+                return _result(self.schema.name, False, error="cancelled")
+            if not path.is_dir():
+                return _result(
+                    self.schema.name, False, error=f"{path} is not a directory"
+                )
+            for child in path.iterdir():
+                if child.is_symlink() or not child.is_dir():
+                    child.unlink()
+                else:
+                    shutil.rmtree(child)
+            return _result(self.schema.name, True, f"cleared {path}")
+        except Exception as exc:  # noqa: BLE001
+            return _result(self.schema.name, False, error=str(exc))
+
+
 def make_read_file_tool():
     return _ReadTool()
 
@@ -228,3 +267,7 @@ def make_edit_file_tool():
 
 def make_remove_file_tool():
     return _RemoveFileTool()
+
+
+def make_clear_directory_tool():
+    return _ClearDirectoryTool()

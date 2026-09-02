@@ -4,6 +4,7 @@ import pytest
 
 from coding_agent.tools.filesystem import (
     MAX_READ_CHARS,
+    make_clear_directory_tool,
     make_edit_file_tool,
     make_read_file_tool,
     make_remove_file_tool,
@@ -150,3 +151,60 @@ async def test_remove_file_leaves_non_empty_directory_untouched(tmp_path):
     assert result.ok is False
     assert keep.exists()
     assert (keep / "x.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_directory_removes_contents_and_keeps_directory(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "a.txt").write_text("a", encoding="utf-8")
+    nested = cache / "nested"
+    nested.mkdir()
+    (nested / "b.txt").write_text("b", encoding="utf-8")
+    result = await make_clear_directory_tool().execute(
+        {"path": "cache"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert "cleared" in result.content
+    assert cache.is_dir()
+    assert list(cache.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_clear_directory_refuses_outside_workspace(tmp_path):
+    outside = tmp_path.parent / "outside-cache"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    result = await make_clear_directory_tool().execute(
+        {"path": "../outside-cache"},
+        context=ToolContext(workspace=tmp_path, permission_mode="workspace"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is False
+    assert "workspace" in (result.error or "")
+    assert (outside / "keep.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_directory_rejects_a_file_path(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("x", encoding="utf-8")
+    result = await make_clear_directory_tool().execute(
+        {"path": "a.txt"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is False
+    assert "not a directory" in (result.error or "")
+    assert target.read_text(encoding="utf-8") == "x"
+
+
+def test_delete_tools_registered_with_app_registry():
+    from coding_agent.app import _make_registry
+
+    schemas = {schema.name: schema for schema in _make_registry().schemas()}
+    for name in ("remove_file", "clear_directory"):
+        assert name in schemas
+        assert schemas[name].risk_level == "mutate_file"
