@@ -1,9 +1,10 @@
 import asyncio
+import hashlib
 import itertools
 import json
 import time
 import uuid
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
@@ -31,6 +32,30 @@ class _StreamAborted(Exception):
 
 _PARALLEL_SAFE_TOOLS = frozenset({"read_file", "list_files", "grep_files"})
 _MUTATION_TOOLS = frozenset({"write_file", "edit_file"})
+
+_REPETITION_WINDOW = 8
+_REPETITION_THRESHOLD = 3
+_RESULT_FINGERPRINT_CAP = 4096
+
+
+def _result_fingerprint(result: ToolResult) -> str:
+    """Hash an executed call's persisted content and error.
+
+    The hashed input is capped per field so huge outputs stay bounded; a
+    content change (e.g. a file re-written between identical reads) must yield
+    a different fingerprint.
+    """
+    content = (result.content or "")[:_RESULT_FINGERPRINT_CAP]
+    error = (result.error or "")[:_RESULT_FINGERPRINT_CAP]
+    return hashlib.sha256(f"{content}\x00{error}".encode()).hexdigest()
+
+
+def _tool_call_signature(call: ToolCall, result: ToolResult) -> str:
+    """Deterministic identity of one executed call and its observed result."""
+    arguments = json.dumps(call.arguments, sort_keys=True)
+    return hashlib.sha256(
+        f"{call.name}\x00{arguments}\x00{_result_fingerprint(result)}".encode()
+    ).hexdigest()
 
 
 def call_schema_parallel_safe(name: str) -> bool:
@@ -142,7 +167,7 @@ class AgentRunner:
         turn_started = time.monotonic()
         usage: Usage | None = None
         final_text = ""
-        last_signatures: deque[tuple[str, str]] = deque(maxlen=3)
+        signature_window: deque[str] = deque(maxlen=_REPETITION_WINDOW)
         step_source = (
             itertools.count(1)
             if self.max_steps is None
@@ -394,11 +419,16 @@ class AgentRunner:
                 )
                 if any(isinstance(item, Exception) for item in wave_results):
                     return TurnOutcome(reason="session_error", steps=step, usage=usage)
-                last_signatures.extend(
-                    (call.name, json.dumps(call.arguments, sort_keys=True))
-                    for call in wave
-                )
-                if len(last_signatures) == 3 and len(set(last_signatures)) == 1:
+                for call, (_, result) in zip(wave, wave_results):
+                    # Calls rejected before execution (invalid arguments) never
+                    # count toward repetition; only genuinely executed calls do.
+                    if call.id in invalid_by_id:
+                        continue
+                    signature_window.append(_tool_call_signature(call, result))
+                if any(
+                    count >= _REPETITION_THRESHOLD
+                    for count in Counter(signature_window).values()
+                ):
                     await self._emit(
                         "notice",
                         run_id,

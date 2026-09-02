@@ -56,7 +56,7 @@ def text_response(text="done"):
     ]
 
 
-def make_runner(tmp_path, provider, *, max_steps=None):
+def make_runner(tmp_path, provider, *, max_steps=None, executor=None):
     store = SessionStore.create(
         tmp_path / "sessions",
         workspace=str(tmp_path),
@@ -75,7 +75,7 @@ def make_runner(tmp_path, provider, *, max_steps=None):
     async def sink(event):
         events.append(event)
 
-    executor = RecordingExecutor()
+    executor = executor or RecordingExecutor()
     runner = AgentRunner(
         provider=provider,
         registry=ToolRegistry(),
@@ -286,3 +286,119 @@ async def test_max_steps_cap_emits_warning_notice_before_returning(tmp_path):
     assert "max_steps" in last.payload["message"]
     # The notice is the last event emitted before the outcome.
     assert events.index(last) == len(events) - 1
+
+
+class VersionedExecutor:
+    """Returns distinct content per call, as if an external write changed the
+    underlying file between identical-argument reads."""
+
+    def __init__(self):
+        self.calls = []
+        self._n = 0
+
+    async def execute(self, call, **kwargs):
+        self.calls.append(call)
+        self._n += 1
+        return ToolResult(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            content=f"generation-{self._n}",
+        )
+
+
+def _repeated_notice(events):
+    return any(
+        event.type == "notice"
+        and event.payload.get("level") == "warning"
+        and "repeated tool call" in (event.payload.get("message") or "")
+        for event in events
+    )
+
+
+def _call_waves(arguments, count):
+    """``count`` single-call read waves, each with a fresh tool call id so the
+    session store can match every tool_result to its own assistant call."""
+    return [tool_response(arguments, call_id=f"c{i}") for i in range(count)]
+
+
+@pytest.mark.asyncio
+async def test_distinct_pure_read_exploration_never_trips(tmp_path):
+    # 20 distinct reads (pure exploration, zero writes) must never trip.
+    waves = [
+        tool_response(json.dumps({"path": f"src/mod{i}.py"}), call_id=f"c{i}")
+        for i in range(20)
+    ]
+    provider = ScriptedProvider([*waves, text_response("done")])
+    runner, _, events, _ = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert not _repeated_notice(events)
+
+
+@pytest.mark.asyncio
+async def test_interleaved_identical_result_repeats_trip(tmp_path):
+    # A,B,A,B,A with identical arguments AND identical results each time: the
+    # repeated A (non-consecutive) must trip the detector.
+    a = json.dumps({"path": "main.py"})
+    b = json.dumps({"path": "other.py"})
+    provider = ScriptedProvider(
+        [
+            tool_response(a, call_id="c0"),
+            tool_response(b, call_id="c1"),
+            tool_response(a, call_id="c2"),
+            tool_response(b, call_id="c3"),
+            tool_response(a, call_id="c4"),
+        ]
+    )
+    runner, _, events, _ = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "progress_loop"
+    assert _repeated_notice(events)
+
+
+@pytest.mark.asyncio
+async def test_identical_result_repeats_trip_consecutively(tmp_path):
+    provider = ScriptedProvider(_call_waves(json.dumps({"path": "main.py"}), 3))
+    runner, _, events, _ = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "progress_loop"
+    assert _repeated_notice(events)
+
+
+@pytest.mark.asyncio
+async def test_identical_args_with_changed_content_does_not_trip(tmp_path):
+    # Re-reading the SAME path with identical arguments, but the executor's
+    # content changes between reads (a write landed), is progress, not a loop.
+    provider = ScriptedProvider(
+        [
+            *_call_waves(json.dumps({"path": "data.txt"}), 3),
+            text_response("done"),
+        ]
+    )
+    runner, _, events, _ = make_runner(tmp_path, provider, executor=VersionedExecutor())
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert not _repeated_notice(events)
+
+
+@pytest.mark.asyncio
+async def test_calls_rejected_before_execution_are_never_counted(tmp_path):
+    # Repeated invalid-argument calls never execute, so they must never enter
+    # the repetition window: the turn survives to the scripted final text.
+    provider = ScriptedProvider([*_call_waves("[]", 4), text_response("recovered")])
+    runner, _, events, executor = make_runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert executor.calls == []
+    assert not _repeated_notice(events)
