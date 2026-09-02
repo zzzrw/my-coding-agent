@@ -72,6 +72,29 @@ def test_load_ignores_unknown_keys(tmp_path):
     assert loaded.model == "m"
 
 
+def test_load_reads_max_steps_from_toml(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("model = 'm'\nmax_steps = 7\n")
+    loaded = load_config(user_path=path)
+    assert loaded.max_steps == 7
+
+
+def test_max_steps_defaults_to_none_unbounded():
+    assert Config().max_steps is None
+
+
+def test_save_writes_max_steps_only_when_set(tmp_path):
+    path = tmp_path / "config.toml"
+    save_config(path, Config(model="m", api_key="k", max_steps=7))
+    text = path.read_text(encoding="utf-8")
+    assert "max_steps = 7" in text
+    assert load_config(user_path=path).max_steps == 7
+
+    unset = tmp_path / "unset.toml"
+    save_config(unset, Config(model="m"))
+    assert "max_steps" not in unset.read_text(encoding="utf-8")
+
+
 def test_config_dir_prefers_xdg_when_set(monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/xdg-config")
     assert config_dir() == Path("/tmp/xdg-config") / "coding-agent"

@@ -1,7 +1,8 @@
 """TOML configuration for coding-agent.
 
 The ``Config`` model holds the provider settings (model, API key, base URL,
-context window, permission mode). ``load_config`` merges the user config file
+context window, permission mode, optional ``max_steps`` cap).
+``load_config`` merges the user config file
 (``$XDG_CONFIG_HOME/coding-agent/config.toml``) with an optional workspace
 ``.coding-agent.toml``; workspace values win. ``save_config`` persists with
 mode ``0600`` so an API key is never world-readable.
@@ -31,6 +32,7 @@ class Config(BaseModel):
     base_url: str = ""
     context_window: int = 0
     permission_mode: str = "default"
+    max_steps: int | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -95,6 +97,8 @@ def _toml_lines(config: Config) -> list[str]:
         lines.append(f"base_url = '{config.base_url}'")
     if config.context_window:
         lines.append(f"context_window = {config.context_window}")
+    if config.max_steps:
+        lines.append(f"max_steps = {config.max_steps}")
     if config.permission_mode and config.permission_mode != "default":
         lines.append(f"permission_mode = '{config.permission_mode}'")
     return lines
