@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import time
 import uuid
@@ -113,7 +114,7 @@ class AgentRunner:
         model: str,
         context_window: int,
         permission_mode: PermissionMode = "default",
-        max_steps: int = 20,
+        max_steps: int | None = None,
         provider_idle_timeout_seconds: float = 90.0,
     ) -> None:
         self.provider = provider
@@ -142,7 +143,12 @@ class AgentRunner:
         usage: Usage | None = None
         final_text = ""
         last_signatures: deque[tuple[str, str]] = deque(maxlen=3)
-        for step in range(1, self.max_steps + 1):
+        step_source = (
+            itertools.count(1)
+            if self.max_steps is None
+            else range(1, self.max_steps + 1)
+        )
+        for step in step_source:
             if signal.is_set():
                 return TurnOutcome(reason="aborted", steps=step - 1, usage=usage)
             try:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -35,10 +36,15 @@ class RecordingExecutor:
         )
 
 
-def tool_response(arguments='{"path":"main.py"}'):
+def tool_response(arguments='{"path":"main.py"}', *, call_id="c1"):
+    # ``call_id`` must be unique across tool waves in the same turn: the session
+    # store matches each tool_result to its preceding assistant tool call, so a
+    # reused id makes the second projection fail.
     return [
-        LLMEvent(type="tool_call_start", tool_call_id="c1", tool_name="read_file"),
-        LLMEvent(type="tool_call_delta", tool_call_id="c1", arguments_delta=arguments),
+        LLMEvent(type="tool_call_start", tool_call_id=call_id, tool_name="read_file"),
+        LLMEvent(
+            type="tool_call_delta", tool_call_id=call_id, arguments_delta=arguments
+        ),
         LLMEvent(type="tool_call_end", finish_reason="tool_calls"),
     ]
 
@@ -233,3 +239,31 @@ async def test_provider_error_and_abort_are_structured(tmp_path):
     aborted = await runner.run_turn("inspect", run_id="r2", turn_id="t2", signal=signal)
     assert provider_error.reason == "provider_error"
     assert aborted.reason == "aborted"
+
+
+@pytest.mark.asyncio
+async def test_unbounded_run_is_not_capped_at_old_default(tmp_path):
+    # 21 distinct single-call waves then a final answer. With the old hidden
+    # default of 20 this stops at max_steps; unbounded it completes.
+    waves = [
+        tool_response(json.dumps({"path": f"file{i}.py"}), call_id=f"c{i}")
+        for i in range(21)
+    ]
+    provider = ScriptedProvider([*waves, text_response("done")])
+    runner, _, _, executor = make_runner(tmp_path, provider, max_steps=None)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert outcome.steps > 20
+    assert len(executor.calls) == 21
+
+
+@pytest.mark.asyncio
+async def test_int_cap_still_bounded(tmp_path):
+    provider = ScriptedProvider([tool_response(), tool_response()])
+    runner, _, _, _ = make_runner(tmp_path, provider, max_steps=2)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "max_steps" and outcome.steps == 2
