@@ -17,6 +17,7 @@ from textual.widgets import Button, Input, Static
 from coding_agent.config.config import (
     Config,
     ConfigurationError,
+    config_dir,
     default_user_config_path,
     load_config,
     save_config,
@@ -79,12 +80,60 @@ def _language_name(language: str) -> str:
     return name or (language or "zh")
 
 
+def _runtime_env_block(
+    workspace: Path,
+    *,
+    model: str,
+    config_dir: str | None,
+    session_dir: str | None,
+) -> str:
+    """A short "Environment / runtime" block grounding the agent in its own state.
+
+    Modeled on production agents that keep prose generic and pass run-specific
+    facts as data: workspace, config/session locations, skills discovery roots,
+    and the session commands. Omitted entirely when neither a config nor a
+    session directory is known, so existing no-arg callers stay byte-identical.
+    The model line appears only when a model id is known. Never emits dates,
+    shells, or credential material.
+    """
+    if config_dir is None and session_dir is None:
+        return ""
+    lines: list[str] = []
+    if model:
+        lines.append(
+            f"- You are model {model}, running as a coding-agent session inside the "
+            "terminal TUI."
+        )
+    if session_dir:
+        lines.append(
+            "- This session is persistent: its messages and approved actions are stored "
+            f"as JSONL under the session dir {session_dir}. Files and sessions outside "
+            "the workspace are off-limits unless the user points you at them."
+        )
+    if config_dir:
+        lines.append(
+            f"- User settings live in the config dir {config_dir}. Skills are discovered "
+            f"from {workspace}/.coding-agent/skills (workspace) and {config_dir}/skills "
+            "(user); a workspace skill shadows a same-named user skill."
+        )
+    lines.append(
+        "- Session commands to mention when relevant: /session and /resume switch "
+        "sessions, /new starts one, /compact summarizes, Esc Esc forks from history, "
+        "/undo reverts your last write, and /permission changes the approval mode "
+        "(default/workspace/full)."
+    )
+    return "Environment / runtime\n" + "\n".join(lines)
+
+
 def build_system_prompt(
     workspace: Path,
     permission_mode: PermissionMode,
     *,
     skills: Sequence[Skill] = (),
     language: str = "zh",
+    config_dir: str | None = None,
+    session_dir: str | None = None,
+    model: str = "",
 ) -> Message:
     """Return the system prompt embedding the safety boundaries for a run.
 
@@ -92,7 +141,9 @@ def build_system_prompt(
     section is emitted, so a skill-less run stays byte-identical to prior
     builds. Only the one-line catalog is appended — never a SKILL.md body.
     ``language`` is the preferred reply language code (e.g. ``"zh"``); the
-    prompt instructs the model to reply in it.
+    prompt instructs the model to reply in it. ``config_dir``, ``session_dir``,
+    and ``model`` are optional runtime facts for the "Environment / runtime"
+    block (emitted only when known).
     """
     section = format_catalog(skills)
     fixed = dedent(
@@ -142,6 +193,11 @@ def build_system_prompt(
           and stop it with pkill or kill.
         - Workspace root: {workspace}"""
     )
+    env = _runtime_env_block(
+        workspace, model=model, config_dir=config_dir, session_dir=session_dir
+    )
+    if env:
+        fixed = fixed.replace("\n\nHow you work", "\n\n" + env + "\n\nHow you work", 1)
     lead = f"Respond in {_language_name(language)}."
     return Message(
         role="system",
@@ -311,7 +367,13 @@ def create_app(
     skills = discover_skills(resolved_workspace)
     resolved_language = language or cfg.language or "zh"
     system_prompt = build_system_prompt(
-        resolved_workspace, permission_mode, skills=skills, language=resolved_language
+        resolved_workspace,
+        permission_mode,
+        skills=skills,
+        language=resolved_language,
+        config_dir=str(config_dir()),
+        session_dir=str(resolved_session_dir),
+        model=resolved_model,
     )
 
     def runner_factory(store, context_policy, broker):

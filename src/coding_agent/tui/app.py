@@ -1055,7 +1055,10 @@ class CodingAgentApp(App[None]):
         self._scroll_settle_scheduled = False
         if not self.is_mounted:
             return
-        transcript = self.query_one("#transcript", TranscriptView)
+        try:
+            transcript = self.query_one("#transcript", TranscriptView)
+        except Exception:  # noqa: BLE001 - screen switched away (modal/teardown)
+            return
         if not transcript.is_vertical_scroll_end:
             transcript.scroll_end(animate=False)
 
