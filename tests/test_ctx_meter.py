@@ -136,6 +136,81 @@ async def test_one_response_turn_reemits_provider_total_without_second_request(
     assert len(provider.requests) == 1
 
 
+class _TwoStepUsageProvider:
+    """A tool-call step followed by a final text step, each with usage."""
+
+    def __init__(self):
+        self.requests = []
+        self.step1_total = 60
+        self.step2_total = 5000
+        self.responses = [
+            [
+                LLMEvent(
+                    type="tool_call_start", tool_call_id="c1", tool_name="read_file"
+                ),
+                LLMEvent(
+                    type="tool_call_delta",
+                    tool_call_id="c1",
+                    arguments_delta='{"path": "main.py"}',
+                ),
+                LLMEvent(
+                    type="tool_call_end",
+                    finish_reason="tool_calls",
+                    usage=Usage(
+                        input_tokens=10, output_tokens=50, total_tokens=self.step1_total
+                    ),
+                ),
+            ],
+            [
+                LLMEvent(type="text_delta", text="done"),
+                LLMEvent(
+                    type="response_end",
+                    finish_reason="stop",
+                    usage=Usage(
+                        input_tokens=4000,
+                        output_tokens=1000,
+                        total_tokens=self.step2_total,
+                    ),
+                ),
+            ],
+        ]
+
+    async def stream(self, messages, tools, *, model, signal):
+        self.requests.append(messages)
+        for event in self.responses.pop(0):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_used_grows_monotonically_across_a_tool_call_turn(tmp_path):
+    """The meter grows after every step, including the appended tool result.
+
+    Between the step-1 response (tool call) and the step-2 request, the tool
+    result is appended. The step-2 opening estimate must sit above the step-1
+    provider total (the appended result is counted), and the sequence of
+    ``context_updated`` used values must never decrease.
+    """
+    provider = _TwoStepUsageProvider()
+    runner, _, events = _runner(tmp_path, provider)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert outcome.usage is not None and outcome.usage.total_tokens == 5000
+
+    used_values = [
+        event.payload["used_tokens"]
+        for event in events
+        if event.type == "context_updated"
+    ]
+    assert used_values == sorted(used_values), "meter must never decrease"
+    # Step-1 assistant_finished reported the provider total (60); the step-2
+    # opening emission adds the appended tool result, so it exceeds 60 without
+    # waiting for the step-2 request to complete.
+    assert used_values[-2] > provider.step1_total
+    assert used_values[-1] == provider.step2_total
+
+
 class _OutcomeRunner:
     """Fake runner that returns a fixed outcome usage and emits nothing."""
 
