@@ -482,6 +482,9 @@ def test_home_subpath_removals_are_not_catastrophic(command):
         "ls >/dev/null 2>&1",
         "dd if=/dev/zero of=/dev/null bs=1M count=1",
         "dd if=x of=/dev/null",
+        "echo hi >/dev/null; echo done",
+        "find . >/dev/null|wc -l",
+        "dd if=x of=/dev/null; sync",
     ],
 )
 def test_dev_null_redirection_is_not_catastrophic(command):
