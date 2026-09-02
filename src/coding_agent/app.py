@@ -216,7 +216,11 @@ class MissingConfiguration(ConfigurationError):
 def _resolve_workspace(workspace: str | Path | None) -> Path:
     path = Path(workspace or Path.cwd()).expanduser().resolve()
     if not path.exists():
-        raise ConfigurationError(f"workspace does not exist: {path}")
+        # Auto-create only when the caller explicitly supplied a workspace
+        # path; the ``None`` default (cwd) always exists and never makedirs.
+        if workspace is None:
+            raise ConfigurationError(f"workspace does not exist: {path}")
+        os.makedirs(path, exist_ok=True)
     if not path.is_dir():
         raise ConfigurationError("workspace is not a directory")
     return path
