@@ -709,7 +709,7 @@ class TuiState(BaseModel):
     context_used: int = 0
     context_window: int = 0
     context_estimated: bool = False
-    policy: Literal["default", "workspace", "full"] = "default"
+    policy: Literal["default", "workspace", "full"] = "workspace"
     status: Literal[
         "idle", "running", "waiting_approval", "error", "aborted"
     ] = "idle"
@@ -779,8 +779,7 @@ Statusline minimum fields:
 ```text
 model
 reasoning level
-context used / remaining
-context window when known
+context used / window (with configured/estimated marker)
 input/output usage when known
 workspace
 git branch or -
