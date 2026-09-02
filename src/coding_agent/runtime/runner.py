@@ -41,13 +41,20 @@ _RESULT_FINGERPRINT_CAP = 4096
 def _result_fingerprint(result: ToolResult) -> str:
     """Hash an executed call's persisted content and error.
 
-    The hashed input is capped per field so huge outputs stay bounded; a
-    content change (e.g. a file re-written between identical reads) must yield
-    a different fingerprint.
+    Hashing stays bounded by sampling a head AND tail window plus the total
+    length of each field, so an edit anywhere in a large output -- including
+    past the head window (read_file returns up to 20,000 chars) -- still
+    changes the fingerprint and keeps a re-read after a content-changing write
+    from counting as a repetition.
     """
-    content = (result.content or "")[:_RESULT_FINGERPRINT_CAP]
-    error = (result.error or "")[:_RESULT_FINGERPRINT_CAP]
-    return hashlib.sha256(f"{content}\x00{error}".encode()).hexdigest()
+    content = result.content or ""
+    error = result.error or ""
+    return hashlib.sha256(
+        f"{content[:_RESULT_FINGERPRINT_CAP]}\x00"
+        f"{content[-_RESULT_FINGERPRINT_CAP:]}\x00{len(content)}\x00"
+        f"{error[:_RESULT_FINGERPRINT_CAP]}\x00"
+        f"{error[-_RESULT_FINGERPRINT_CAP:]}\x00{len(error)}".encode()
+    ).hexdigest()
 
 
 def _tool_call_signature(call: ToolCall, result: ToolResult) -> str:

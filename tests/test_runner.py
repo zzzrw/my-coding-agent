@@ -288,6 +288,27 @@ async def test_max_steps_cap_emits_warning_notice_before_returning(tmp_path):
     assert events.index(last) == len(events) - 1
 
 
+@pytest.mark.asyncio
+async def test_completing_on_last_capped_step_emits_no_max_steps_notice(tmp_path):
+    # A bounded turn whose FINAL answer lands exactly on the last allowed step
+    # (a tool wave, then the final text stream consumes the cap with no further
+    # tool calls) is a normal completion, not a capped exit. It must return
+    # reason == "completed" and never precede the outcome with the "reached the
+    # max_steps limit" notice.
+    provider = ScriptedProvider([tool_response(), text_response("done")])
+    runner, _, events, executor = make_runner(tmp_path, provider, max_steps=2)
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert outcome.steps == 2
+    assert len(executor.calls) == 1
+    assert not any(
+        event.type == "notice" and "max_steps" in (event.payload.get("message") or "")
+        for event in events
+    )
+
+
 class VersionedExecutor:
     """Returns distinct content per call, as if an external write changed the
     underlying file between identical-argument reads."""
@@ -304,6 +325,27 @@ class VersionedExecutor:
             tool_name=call.name,
             ok=True,
             content=f"generation-{self._n}",
+        )
+
+
+class LongTailExecutor:
+    """Returns content longer than the result-fingerprint cap whose head stays
+    byte-identical across calls while only the region PAST the first 4096 chars
+    changes -- simulating a write that edited the tail of a large file (read_file
+    may return up to 20,000 chars)."""
+
+    def __init__(self):
+        self.calls = []
+        self._n = 0
+
+    async def execute(self, call, **kwargs):
+        self.calls.append(call)
+        self._n += 1
+        return ToolResult(
+            tool_call_id=call.id,
+            tool_name=call.name,
+            ok=True,
+            content="A" * 4096 + f"tail-generation-{self._n}",
         )
 
 
@@ -387,6 +429,29 @@ async def test_identical_args_with_changed_content_does_not_trip(tmp_path):
         "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
     )
     assert outcome.reason == "completed"
+    assert not _repeated_notice(events)
+
+
+@pytest.mark.asyncio
+async def test_tail_only_change_beyond_fingerprint_cap_does_not_trip(tmp_path):
+    # Three identical-argument reads whose content differs ONLY past the first
+    # 4096 chars (the head window of the result fingerprint). The fingerprint
+    # must still observe a tail edit so a genuinely progressing turn is not
+    # reported as a repetition loop.
+    provider = ScriptedProvider(
+        [
+            *_call_waves(json.dumps({"path": "big.txt"}), 3),
+            text_response("done"),
+        ]
+    )
+    runner, _, events, executor = make_runner(
+        tmp_path, provider, executor=LongTailExecutor()
+    )
+    outcome = await runner.run_turn(
+        "inspect", run_id="r1", turn_id="t1", signal=asyncio.Event()
+    )
+    assert outcome.reason == "completed"
+    assert len(executor.calls) == 3
     assert not _repeated_notice(events)
 
 
