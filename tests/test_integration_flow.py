@@ -82,6 +82,8 @@ async def test_factory_runs_write_verification_and_completion(tmp_path):
         "grep_files",
         "write_file",
         "edit_file",
+        "remove_file",
+        "clear_directory",
         "run_command",
     }
 

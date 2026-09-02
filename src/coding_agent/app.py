@@ -52,15 +52,33 @@ ONBOARDING_BASE_URL_ENVS = (
     "OPENAI_BASE_URL",
     "DEEPSEEK_BASE_URL",
 )
-SYSTEM_PROMPT = Message(
-    role="system",
-    content=(
-        "You are coding-agent, an engineering assistant operating in the user's "
-        "workspace. Inspect relevant files before changing them, use the provided "
-        "tools for workspace operations, verify changes when practical, and give a "
-        "concise final response."
-    ),
-)
+
+
+def build_system_prompt(workspace: Path, permission_mode: PermissionMode) -> Message:
+    """Return the system prompt embedding the safety boundaries for a run."""
+    return Message(
+        role="system",
+        content=(
+            "You are coding-agent, an engineering assistant operating in the user's "
+            "workspace. Inspect relevant files before changing them, use the provided "
+            "tools for workspace operations, verify changes when practical, and give a "
+            "concise final response.\n\n"
+            "Permission boundaries\n"
+            "- Hard-denied in every mode (never attempt and do not work around): rm "
+            "of /, ~, $HOME, /root, or a whole /home/<user>; git push --force; git "
+            "reset --hard; git clean -f; mkfs/fdisk/shutdown/reboot/poweroff.\n"
+            "- For deletions prefer the workspace-bounded remove_file and "
+            "clear_directory tools, and prefer relative in-workspace paths.\n"
+            '- Do not silence command output with "> /dev/null" (blocked); if you '
+            "must combine stderr, pipe with 2>&1.\n"
+            f'- The active permission mode is "{permission_mode}": in "default" '
+            'every shell command requires user approval; in "workspace"/"full" '
+            "only the hard-denied commands above are rejected.\n"
+            '- A dev server started with "&" persists across tool calls; inspect it '
+            "with pgrep and stop it with pkill or kill.\n"
+            f"- Workspace root: {workspace}"
+        ),
+    )
 
 
 # ``ConfigurationError`` lives in the config module and is re-exported here so
@@ -217,6 +235,7 @@ def create_app(
     registry = _make_registry()
     approval_policy = DefaultApprovalPolicy()
     journal = MutationJournal()
+    system_prompt = build_system_prompt(resolved_workspace, permission_mode)
 
     def runner_factory(store, context_policy, broker):
         executor = ToolExecutor(
@@ -229,7 +248,7 @@ def create_app(
             context_policy=context_policy,
             store=store,
             event_sink=lambda event: _discard_event(event),
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             model=store.header.model,
             context_window=store.header.context_window,
             permission_mode=permission_mode,
@@ -243,7 +262,7 @@ def create_app(
         runner_factory=runner_factory,
         context_policy_factory=make_context_policy,
         approval_policy=approval_policy,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         model=resolved_model,
         permission_mode=permission_mode,
     )
