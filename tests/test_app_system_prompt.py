@@ -52,3 +52,22 @@ def test_system_prompt_guides_dev_server_management(tmp_path):
     content = _content(tmp_path, "default")
     assert "pgrep" in content
     assert "pkill" in content
+
+
+def test_system_prompt_includes_new_crafting_guidance(tmp_path):
+    content = _content(tmp_path, "workspace")
+    for fragment in (
+        "How you work",
+        "Final response",
+        "path:line",
+        "load_skill",
+        "Permission boundaries",
+        str(tmp_path),
+    ):
+        assert fragment in content
+
+
+def test_system_prompt_states_active_mode_sentence_and_drops_old_wording(tmp_path):
+    content = _content(tmp_path, "workspace")
+    assert 'Active permission mode is "workspace"' in content
+    assert "engineering assistant" not in content
