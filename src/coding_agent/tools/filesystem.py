@@ -59,6 +59,10 @@ class _EditArgs(BaseModel):
     new_text: str
 
 
+class _RemoveFileArgs(BaseModel):
+    path: str
+
+
 class _ReadTool:
     args_model = _ReadArgs
     schema = ToolSchema(
@@ -181,6 +185,35 @@ class _EditTool:
             return _result(self.schema.name, False, error=str(exc))
 
 
+class _RemoveFileTool:
+    args_model = _RemoveFileArgs
+    schema = ToolSchema(
+        name="remove_file",
+        description="Delete a file or an empty directory",
+        parameters=_RemoveFileArgs.model_json_schema(),
+        risk_level="mutate_file",
+    )
+
+    async def execute(self, arguments, *, context, signal):
+        try:
+            args = self.args_model.model_validate(arguments)
+            path = resolve_tool_path(
+                context.workspace,
+                args.path,
+                permission_mode=context.permission_mode,
+                allow_outside_once=context.allow_outside_once,
+            )
+            if signal.is_set():
+                return _result(self.schema.name, False, error="cancelled")
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink()
+            return _result(self.schema.name, True, f"removed {path}")
+        except Exception as exc:  # noqa: BLE001
+            return _result(self.schema.name, False, error=str(exc))
+
+
 def make_read_file_tool():
     return _ReadTool()
 
@@ -191,3 +224,7 @@ def make_write_file_tool():
 
 def make_edit_file_tool():
     return _EditTool()
+
+
+def make_remove_file_tool():
+    return _RemoveFileTool()

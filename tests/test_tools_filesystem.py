@@ -6,6 +6,7 @@ from coding_agent.tools.filesystem import (
     MAX_READ_CHARS,
     make_edit_file_tool,
     make_read_file_tool,
+    make_remove_file_tool,
     make_write_file_tool,
 )
 from coding_agent.tools.registry import ToolContext
@@ -93,3 +94,59 @@ async def test_path_escape_requires_override_and_is_one_call(
     )
     assert allowed.ok is True
     assert allowed.content == "secret"
+
+
+@pytest.mark.asyncio
+async def test_remove_file_deletes_a_file(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("bye", encoding="utf-8")
+    result = await make_remove_file_tool().execute(
+        {"path": "a.txt"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert "removed" in result.content
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_remove_file_deletes_an_empty_directory(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = await make_remove_file_tool().execute(
+        {"path": "empty"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is True
+    assert not empty.exists()
+
+
+@pytest.mark.asyncio
+async def test_remove_file_refuses_outside_workspace(tmp_path):
+    outside = tmp_path.parent / "outside-remove.txt"
+    outside.write_text("secret", encoding="utf-8")
+    result = await make_remove_file_tool().execute(
+        {"path": "../outside-remove.txt"},
+        context=ToolContext(workspace=tmp_path, permission_mode="workspace"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is False
+    assert "workspace" in (result.error or "")
+    assert outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_remove_file_leaves_non_empty_directory_untouched(tmp_path):
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    (keep / "x.txt").write_text("x", encoding="utf-8")
+    result = await make_remove_file_tool().execute(
+        {"path": "keep"},
+        context=ToolContext(workspace=tmp_path, permission_mode="full"),
+        signal=asyncio.Event(),
+    )
+    assert result.ok is False
+    assert keep.exists()
+    assert (keep / "x.txt").exists()
