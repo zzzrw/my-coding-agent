@@ -84,6 +84,7 @@ async def test_factory_runs_write_verification_and_completion(tmp_path):
         "edit_file",
         "remove_file",
         "clear_directory",
+        "load_skill",
         "run_command",
     }
 

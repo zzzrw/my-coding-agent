@@ -65,7 +65,9 @@ def _parse_skill_markdown(text: str) -> tuple[dict[str, str], str]:
         if key in {"name", "description", "when_to_use"}:
             fields[key] = value.strip()
     body = "" if end is None else "\n".join(lines[end + 1 :])
-    return fields, body
+    # The conventional blank separator after the closing ``---`` belongs to the
+    # delimiter, not the body; drop leading blank lines so the body is exact.
+    return fields, body.lstrip("\n")
 
 
 def _skill_at(skill_dir: Path, root: Path, label: SkillRoot) -> Skill | None:
@@ -125,14 +127,16 @@ def discover_skills(workspace, *, user_root=None) -> list[Skill]:
 def resolve_skill(name, workspace, *, user_root=None) -> Skill | None:
     """Resolve ``name`` to a Skill across the two roots (workspace first).
 
-    Returns ``None`` for an unsafe name or when no matching skill exists, so the
-    caller can report it as unknown.
+    Resolution matches the effective skill name (the frontmatter ``name`` when
+    present, else the directory name) exactly as ``discover_skills`` reports it,
+    so the catalog and ``load_skill`` always agree on what is loadable. Returns
+    ``None`` for an unsafe name or when no matching skill exists, so the caller
+    can report it as unknown.
     """
     if not _is_safe_name(name):
         return None
-    for root_path, label in _roots(workspace, user_root):
-        skill = _skill_at(root_path / name, root_path, label)
-        if skill is not None:
+    for skill in discover_skills(workspace, user_root=user_root):
+        if skill.name == name:
             return skill
     return None
 
