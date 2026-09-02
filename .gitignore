@@ -224,3 +224,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Submission hygiene: never stage reference/vendor trees, scratch dirs, or exam material
+ref/
+research/
+ASSIGNMENT_NOTICE.md
+.omx/
+.superpowers/
+.idea/
