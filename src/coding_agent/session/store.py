@@ -228,6 +228,26 @@ class SessionStore:
                     open_turns.remove(tid)
                 if record.payload.get("reason") in {"interrupted", "aborted"}:
                     interrupted_turns.add(tid)
+        # A turn the runtime stopped (reason=aborted) or that was interrupted on
+        # resume is not discarded wholesale: its completed assistant/tool work
+        # must stay visible to later turns, or the agent forgets what it did
+        # right before the abort. Only an aborted turn that produced no content
+        # (e.g. it was killed before its first assistant stream finished) is
+        # skipped, so a lone user message is not replayed into the next request.
+        interrupted_with_content: set[str] = set()
+        for record in self._records:
+            tid = record.turn_id or record.payload.get("turn_id")
+            if tid not in interrupted_turns:
+                continue
+            if record.type == "tool_result":
+                interrupted_with_content.add(tid)
+            elif (
+                record.type == "assistant_message"
+                and record.payload.get("complete") is True
+            ):
+                message = Message.model_validate(record.payload["message"])
+                if message.content or message.tool_calls:
+                    interrupted_with_content.add(tid)
         stale_open_turns = set(open_turns[:-1])
         projected: list[SessionMessage] = []
         pending_calls: dict[str, tuple[int, str | None]] = {}
@@ -236,7 +256,7 @@ class SessionStore:
         for record in self._records:
             tid = record.turn_id or record.payload.get("turn_id")
             if (
-                tid in interrupted_turns
+                (tid in interrupted_turns and tid not in interrupted_with_content)
                 or tid in stale_open_turns
                 or (not include_open_turn and tid in open_turns)
             ):

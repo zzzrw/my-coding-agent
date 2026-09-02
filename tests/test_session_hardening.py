@@ -6,7 +6,9 @@ These cover high-confidence defects in resume projection and session status:
    discarded as a whole group, leaving no orphan tool result behind.
 2. A ToolResult carrying both nonempty content and an error must preserve both
    in the projected tool message content in a stable, readable form.
-3. Aborted turns must be excluded from resume projection like interrupted turns.
+3. Aborted/interrupted turns that produced assistant or tool content stay in
+   resume projection (so the agent remembers its pre-abort work); only aborted
+   turns with no content are excluded.
 4. Multiple open turns must not retain stale open history during resume.
 """
 
@@ -160,7 +162,10 @@ def test_tool_result_preserves_both_content_and_error(tmp_path):
     assert content == "partial stdout\n\n[error] command failed"
 
 
-def test_aborted_turn_is_excluded_from_projection(tmp_path):
+def test_aborted_turn_with_content_is_retained_in_projection(tmp_path):
+    # An aborted turn that already produced assistant/tool work must stay in
+    # later context: dropping it wholesale made the agent forget the writes and
+    # observations it made right before the abort (session 15fad35e).
     store = _store(tmp_path)
     store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
     store.append_new(
@@ -178,8 +183,69 @@ def test_aborted_turn_is_excluded_from_projection(tmp_path):
     )
     store.append_new("turn_end", {"reason": "aborted"}, turn_id="t1")
 
+    roles = [item.message.role for item in store.project_messages()]
+    contents = [item.message.content for item in store.project_messages()]
+    assert roles == ["user", "assistant"]
+    assert contents == ["cancelled prompt", "partial answer"]
+    assert store.project_messages(include_open_turn=True) == store.project_messages()
+
+
+def test_aborted_turn_without_content_is_still_excluded(tmp_path):
+    # Killed before its first assistant stream finished: only the user message
+    # exists, so it is not replayed into the next request.
+    store = _store(tmp_path)
+    store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
+    store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="never answered")},
+        turn_id="t1",
+    )
+    store.append_new("turn_end", {"reason": "aborted"}, turn_id="t1")
+
     assert store.project_messages() == []
     assert store.project_messages(include_open_turn=True) == []
+
+
+def test_aborted_turn_tool_results_are_retained(tmp_path):
+    store = _store(tmp_path)
+    store.append_new("turn_start", {"turn_id": "t1"}, turn_id="t1")
+    store.append_new(
+        "user_message",
+        {"message": Message(role="user", content="write the file")},
+        turn_id="t1",
+    )
+    store.append_new(
+        "assistant_message",
+        {
+            "message": Message(
+                role="assistant",
+                tool_calls=[ToolCall(id="c1", name="write_file")],
+            ),
+            "complete": True,
+        },
+        turn_id="t1",
+    )
+    store.append_new(
+        "tool_result",
+        {
+            "result": ToolResult(
+                tool_call_id="c1",
+                tool_name="write_file",
+                ok=True,
+                content="wrote /tmp/x/game.js",
+            )
+        },
+        turn_id="t1",
+    )
+    store.append_new("turn_end", {"reason": "aborted"}, turn_id="t1")
+
+    roles = [
+        item.message.role for item in store.project_messages(include_open_turn=True)
+    ]
+    assert roles == ["user", "assistant", "tool"]
+    assert store.project_messages(include_open_turn=True)[-1].message.content == (
+        "wrote /tmp/x/game.js"
+    )
 
 
 def test_multiple_open_turns_do_not_retain_stale_history(tmp_path):
