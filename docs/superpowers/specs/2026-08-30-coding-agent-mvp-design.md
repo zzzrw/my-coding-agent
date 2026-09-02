@@ -338,7 +338,13 @@ provider_error
 session_error
 ```
 
-Default `max_steps` is 20 and is configurable.
+`max_steps` is now an optional per-turn step cap that defaults to *unbounded*
+(`None`): the run loop keeps stepping until the model concludes, the run is
+aborted/fails, or (with a configured int cap) the budget is exhausted. When a
+configured cap is reached the runner first emits a warning `notice` and then
+returns `reason="max_steps"` — the cap is never silent. This amends the earlier
+"default 20" wording; the authoritative contract is the superseding spec
+`2026-09-02-coding-agent-unbounded-max-steps.md`.
 
 ## 8. Tools and Execution
 

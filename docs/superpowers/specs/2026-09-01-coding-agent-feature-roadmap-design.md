@@ -253,6 +253,13 @@ summary before executing.
 
 ## 4. W4 — Agent robustness (retry + heartbeat/timeout + loop detection + summary compression)
 
+*Amendment (2026-09-02): the run loop's step budget and W4's loop detection are
+superseded by `2026-09-02-coding-agent-unbounded-max-steps.md`. The step budget
+is unbounded by default (optional int `max_steps` config), and the no-progress
+detector is a windowed, result-aware repetition detector over executed calls
+rather than 3 consecutive identical calls. Retry, heartbeat, idle timeout, and
+summary compression below are unchanged.*
+
 ### 4.1 Goal
 
 The agent recovers from transient tool failures, surfaces liveness and idle
@@ -269,10 +276,16 @@ silently discarding old turns.
 - If the provider streams nothing for a long idle window, the TUI shows a
   `provider idle` warning notice and the run ends with `provider_timeout`. A
   heartbeat keeps the statusline elapsed timer honest during slow model output.
-- If the agent calls the same tool with the same arguments repeatedly (≥3 times
-  in a row) with no intervening progress, the TUI warns
-  `repeated tool call without progress` and the run stops with
-  `reason="progress_loop"`.
+- If an *executed* tool call repeats unchanged — same tool, same arguments,
+  and the same result content/error — at least 3 times within the last 8
+  executed calls, the TUI warns `repeated tool call without progress` and the
+  run stops with `reason="progress_loop"`. Repetitions count anywhere inside
+  the sliding window, so interleaved repeats (`A,B,A,B,A`) trip it, and the
+  result is part of the identity: re-reading the same unchanged file/grep 3+
+  times trips it, but re-reading a file whose content changed after a write
+  does not. This replaces the earlier "≥3 identical calls in a row" wording;
+  see the superseding spec
+  `2026-09-02-coding-agent-unbounded-max-steps.md`.
 - `/compact` summarizes removed turns (model-generated) and prepends the summary
   as a system message instead of dropping them silently. If summarization is
   unavailable/fails, it falls back to the current silent truncation.
@@ -290,10 +303,17 @@ silently discarding old turns.
   a `heartbeat` event every `15s` (payload `{elapsed_seconds}`) — the reducer
   ignores it except to force a statusline refresh (cheap no-op). The UI-side
   elapsed timer (W1) provides the visual heartbeat.
-- **Loop detection**: `AgentRunner` keeps a deque of last call signatures
-  `(name, json.dumps(arguments, sort_keys=True))`. If the tail has ≥3 identical
-  signatures and the set size is 1, emit `notice` and return
-  `TurnOutcome(reason="progress_loop")`.
+- **Loop detection** (amended by
+  `2026-09-02-coding-agent-unbounded-max-steps.md`): `AgentRunner` keeps a
+  bounded sliding window of the last `W = 8` executed-call signatures. A
+  signature is a deterministic hash of `(tool_name, canonical sorted-JSON
+  arguments, result fingerprint)`, where the result fingerprint hashes the
+  persisted result content + error (input capped near 4096 chars). After each
+  executed wave the runner inserts that wave's signatures into the window; if
+  any signature occurs ≥3 times within the window it emits a `notice` and
+  returns `TurnOutcome(reason="progress_loop")`. Consecutive and interleaved
+  repeats both trip it; a signature that differs — different tool, different
+  arguments, or a changed result — never does.
 - **Summary compression**: `context/policy.py` truncation is unchanged.
   `AgentRuntime.compact()`:
   1. computes the removed-turn message span as today,
@@ -326,7 +346,11 @@ silently discarding old turns.
   retried; `retries` metadata set; retry count respected.
 - Idle timeout: a provider that stalls past the window yields
   `provider_timeout`; heartbeat emitted during slow output.
-- Loop: 3 identical signatures → `progress_loop`; a differing call resets.
+- Loop: same tool + arguments + unchanged result repeated ≥3 times within the
+  window → `progress_loop`, including interleaved repeats; broad distinct
+  pure-read exploration and a re-read after a content-changing write never trip
+  it. Detailed expectations live in
+  `2026-09-02-coding-agent-unbounded-max-steps.md`.
 - Summary compression: fake provider returns a summary; compaction record stores
   it; `project_messages` prepends it; summarizer failure falls back to silent
   truncation (no summary, no error).
