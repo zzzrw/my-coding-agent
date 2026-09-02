@@ -559,11 +559,18 @@ def _plan_arg_label(arguments: object, name: str) -> str | None:
     if name == "run_command":
         command = arguments.get("command")
         if isinstance(command, str) and command.strip():
-            return command
+            return _bounded_label(command)
     path = arguments.get("path")
     if isinstance(path, str) and path.strip():
-        return path
+        return _bounded_label(path)
     return None
+
+
+def _bounded_label(value: str) -> str:
+    """Bound a single-argument label like _command_text bounds a tool-row one."""
+    if len(value) > _TOOL_LABEL_MAX_CHARS:
+        value = value[: _TOOL_LABEL_MAX_CHARS - 1].rstrip() + "…"
+    return value
 
 
 _TOOL_LABEL_MAX_CHARS = 160

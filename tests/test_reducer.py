@@ -631,3 +631,41 @@ def test_plan_label_for_write_file_shows_only_path() -> None:
     assert row.kind == "system"
     assert "write_file(main.py)" in row.text
     assert "content" not in row.text
+
+
+def test_plan_label_bounds_overlong_run_command_command() -> None:
+    long_command = "uv run pytest " + "a" * 500
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event(
+            "plan_preview",
+            {
+                "tool_calls": [
+                    {"name": "run_command", "arguments": {"command": long_command}}
+                ]
+            },
+        ),
+    )
+    row = state.transcript[-1]
+    assert row.kind == "system"
+    assert "a" * 200 not in row.text
+    assert "a" * 400 not in row.text
+    assert len(row.text) < 200
+    assert "…" in row.text
+
+
+def test_plan_label_bounds_overlong_path() -> None:
+    long_path = "/very/deep/" + "d" * 500 + "/file.py"
+    state = reduce(
+        initial_state(workspace="/tmp/project", model="fake"),
+        event(
+            "plan_preview",
+            {"tool_calls": [{"name": "write_file", "arguments": {"path": long_path}}]},
+        ),
+    )
+    row = state.transcript[-1]
+    assert row.kind == "system"
+    assert "d" * 200 not in row.text
+    assert "/file.py" not in row.text
+    assert len(row.text) < 200
+    assert "…" in row.text
