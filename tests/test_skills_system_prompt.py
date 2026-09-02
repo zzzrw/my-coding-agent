@@ -1,9 +1,10 @@
 import asyncio
 from pathlib import Path
 
+from coding_agent.skills.discovery import discover_skills
+
 from coding_agent.app import build_system_prompt, create_app
 from coding_agent.runtime.models import LLMEvent
-from coding_agent.skills.discovery import discover_skills
 
 
 class _RecordingProvider:

@@ -4,11 +4,15 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from coding_agent.skills.models import Skill
 
 from coding_agent.runtime.events import RuntimeEvent
-from coding_agent.skills.models import Skill
 from coding_agent.tui.app import CodingAgentApp
-from coding_agent.tui.commands import SUPPORTED_COMMANDS, command_suggestions, parse_command
+from coding_agent.tui.commands import (
+    SUPPORTED_COMMANDS,
+    command_suggestions,
+    parse_command,
+)
 from coding_agent.tui.state import TuiState, initial_state
 from coding_agent.tui.widgets import (
     HelpScreen,
@@ -73,9 +77,7 @@ def _write_demo_skill(tmp_path: Path) -> Path:
 
 def test_skills_command_registered():
     assert "skills" in SUPPORTED_COMMANDS
-    assert (
-        command_suggestions("ski")[0].description == "List available skills"
-    )
+    assert command_suggestions("ski")[0].description == "List available skills"
 
 
 def test_help_overlay_empty_default_shows_no_skills():

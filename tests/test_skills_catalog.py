@@ -20,10 +20,7 @@ def _skill(name, description, when_to_use=None):
 
 def test_format_catalog_renders_sorted_lines():
     skills = [_skill("zulu", "last"), _skill("alpha", "first")]
-    assert (
-        format_catalog(skills)
-        == "## Available skills\n- alpha: first\n- zulu: last"
-    )
+    assert format_catalog(skills) == "## Available skills\n- alpha: first\n- zulu: last"
 
 
 def test_format_catalog_empty_is_empty_string():

@@ -91,8 +91,7 @@ def build_system_prompt(
             "only the hard-denied commands above are rejected.\n"
             '- A dev server started with "&" persists across tool calls; inspect it '
             "with pgrep and stop it with pkill or kill.\n"
-            f"- Workspace root: {workspace}"
-            + (("\n\n" + section) if section else "")
+            f"- Workspace root: {workspace}" + (("\n\n" + section) if section else "")
         ),
     )
 

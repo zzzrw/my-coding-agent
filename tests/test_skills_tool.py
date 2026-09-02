@@ -2,9 +2,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from coding_agent.skills.tool import make_load_skill_tool
 
 from coding_agent.policy.approval import DefaultApprovalPolicy
-from coding_agent.skills.tool import make_load_skill_tool
 from coding_agent.tools.registry import ToolContext
 
 BODY = "Do the conventional-commits thing.\n\nUse type, scope, subject."
@@ -23,7 +23,9 @@ def _workspace_skills(tmp_path: Path) -> Path:
 
 @pytest.mark.asyncio
 async def test_load_skill_returns_body_without_frontmatter(tmp_path):
-    _write(_workspace_skills(tmp_path), "demo", "---\ndescription: Do it.\n---\n\n" + BODY)
+    _write(
+        _workspace_skills(tmp_path), "demo", "---\ndescription: Do it.\n---\n\n" + BODY
+    )
     tool = make_load_skill_tool()
     context = ToolContext(workspace=tmp_path, permission_mode="full")
 
