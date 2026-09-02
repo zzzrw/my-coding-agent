@@ -69,8 +69,8 @@ def build_system_prompt(workspace: Path, permission_mode: PermissionMode) -> Mes
             "reset --hard; git clean -f; mkfs/fdisk/shutdown/reboot/poweroff.\n"
             "- For deletions prefer the workspace-bounded remove_file and "
             "clear_directory tools, and prefer relative in-workspace paths.\n"
-            '- Do not silence command output with "> /dev/null" (blocked); if you '
-            "must combine stderr, pipe with 2>&1.\n"
+            '- Silencing command output with "> /dev/null" is discouraged; prefer '
+            "redirecting to a log file or piping with 2>&1.\n"
             f'- The active permission mode is "{permission_mode}": in "default" '
             'every shell command requires user approval; in "workspace"/"full" '
             "only the hard-denied commands above are rejected.\n"

@@ -33,6 +33,8 @@ def test_system_prompt_recommends_the_sanctioned_delete_tools(tmp_path):
 def test_system_prompt_discourages_dev_null_redirection(tmp_path):
     content = _content(tmp_path, "default")
     assert "> /dev/null" in content
+    assert "discouraged" in content
+    assert "(blocked)" not in content
     assert "2>&1" in content
 
 
