@@ -499,3 +499,39 @@ def test_dev_null_redirection_is_not_catastrophic(command):
 )
 def test_dev_block_device_writes_remain_catastrophic(command):
     assert classify_command(command).catastrophic is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git reset -q --hard HEAD",
+        "git -C . reset --hard",
+        "git -c x=y reset --hard HEAD",
+        "git --git-dir=/tmp/g reset --hard",
+        "git --exec-path /tmp reset --hard",
+    ],
+)
+def test_git_reset_hard_with_interleaved_options_is_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+    assert classify_command(command).catastrophic is True
+    for mode in ("default", "workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "deny"
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git reset --soft HEAD",
+        "git reset -q HEAD",
+        "git reset --mixed",
+        "git reset HEAD",
+        "git -C . reset --soft",
+    ],
+)
+def test_non_hard_git_reset_forms_are_not_catastrophic(command):
+    assert classify_command(command).catastrophic is False

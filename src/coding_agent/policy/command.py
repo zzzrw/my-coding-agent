@@ -115,7 +115,7 @@ _GIT_GLOBAL_FLAGS = {
 }
 
 
-def _git_push_subcommand_index(tokens: list[str], git_index: int) -> int | None:
+def _git_subcommand_index(tokens: list[str], git_index: int) -> int | None:
     index = git_index + 1
     while index < len(tokens):
         token = tokens[index]
@@ -277,7 +277,7 @@ def _git_push_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if Path(token).name != "git":
             continue
-        push_index = _git_push_subcommand_index(tokens, index)
+        push_index = _git_subcommand_index(tokens, index)
         if push_index is None or tokens[push_index] != "push":
             continue
         return _git_push_arguments_are_catastrophic(tokens[push_index + 1 :])
@@ -291,7 +291,7 @@ def _git_remote_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if Path(token).name != "git":
             continue
-        subcommand_index = _git_push_subcommand_index(tokens, index)
+        subcommand_index = _git_subcommand_index(tokens, index)
         if subcommand_index is None or tokens[subcommand_index] != "remote":
             continue
         action_index = subcommand_index + 1
@@ -299,6 +299,33 @@ def _git_remote_is_catastrophic(tokens: list[str]) -> bool:
             action_index < len(tokens)
             and tokens[action_index] in _GIT_REMOTE_DESTRUCTIVE_ACTIONS
         ):
+            return True
+    return False
+
+
+def _git_reset_arguments_are_catastrophic(arguments: list[str]) -> bool:
+    """True when a ``git reset`` invocation carries the ``--hard`` flag.
+
+    ``--hard`` may appear anywhere among the subcommand's options (``-q``,
+    ``--quiet``, etc.). A bare ``--`` ends option parsing, so tokens after it
+    are pathspec operands rather than flags.
+    """
+    for item in arguments:
+        if item == "--":
+            break
+        if item == "--hard":
+            return True
+    return False
+
+
+def _git_reset_is_catastrophic(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if Path(token).name != "git":
+            continue
+        subcommand_index = _git_subcommand_index(tokens, index)
+        if subcommand_index is None or tokens[subcommand_index] != "reset":
+            continue
+        if _git_reset_arguments_are_catastrophic(tokens[subcommand_index + 1 :]):
             return True
     return False
 
@@ -376,6 +403,7 @@ def classify_command(command: str) -> CommandClassification:
         _rm_is_catastrophic(tokens)
         or _git_push_is_catastrophic(tokens)
         or _git_remote_is_catastrophic(tokens)
+        or _git_reset_is_catastrophic(tokens)
         or _git_config_shell_alias_is_catastrophic(tokens)
         or _nested_shell_is_catastrophic(tokens)
         or _command_substitutions_are_catastrophic(command)
