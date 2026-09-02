@@ -28,6 +28,13 @@ from coding_agent.tui.state import TranscriptItem, TuiState
 class TranscriptRow(Static):
     """A single immutable transcript snapshot row."""
 
+    # Disable Textual text selection on rows: the mouse-select path dereferences
+    # ``content_widget.parent``, which can be ``None`` when a click lands on a row
+    # that was just detached by the transcript re-render (remove_children + mount
+    # on every streamed event). We never use drag-to-select here; tool-row clicks
+    # still work through ``on_click``.
+    ALLOW_SELECT = False
+
     class ToolRowClicked(Message):
         """Mouse-clicked a compact tool row to expand or collapse it."""
 

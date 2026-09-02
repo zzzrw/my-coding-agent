@@ -294,6 +294,15 @@ def test_transcript_row_carries_row_and_kind_classes(kind):
     assert f"row-{kind}" in classes
 
 
+def test_transcript_row_disables_text_selection():
+    # Static.ALLOW_SELECT defaults to True, which makes Textual's mouse-down
+    # path dereference content_widget.parent and crash (None) when a click lands
+    # on a row detached mid re-render. Rows opt out of drag-select.
+    item = TranscriptItem(kind="assistant", item_id="m1", text="hello")
+    row = TranscriptRow(item, index=0)
+    assert row.allow_select is False
+
+
 def test_app_css_has_row_spacing_and_full_width_user_card():
     css = CodingAgentApp.CSS
 
