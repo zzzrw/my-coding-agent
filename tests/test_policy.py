@@ -465,3 +465,37 @@ def test_home_subpath_removals_are_not_catastrophic(command):
         ).kind
         == "ask"
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls > /dev/null",
+        "echo hi 2>/dev/null",
+        "ls >/dev/null 2>&1",
+        "dd if=/dev/zero of=/dev/null bs=1M count=1",
+        "dd if=x of=/dev/null",
+    ],
+)
+def test_dev_null_redirection_is_not_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+    assert classify_command(command).catastrophic is False
+    for mode in ("workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "allow"
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo bad 2>/dev/sda",
+        "echo bad >>/dev/nvme0n1",
+        "dd if=x of=/dev/sda",
+    ],
+)
+def test_dev_block_device_writes_remain_catastrophic(command):
+    assert classify_command(command).catastrophic is True

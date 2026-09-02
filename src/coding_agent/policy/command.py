@@ -14,8 +14,8 @@ class CommandClassification(BaseModel):
 _CATASTROPHIC = [
     r"\b(?:\S*/)?mkfs(?:\.[\w-]+)?(?:\s|$)",
     r"\b(?:\S*/)?fdisk(?:\s|$)",
-    r"\bdd\s+.*of=/dev/",
-    r">{1,2}\s*/dev/",
+    r"\bdd\s+.*\bof=/dev/(?!null(?:\s|$))",
+    r">{1,2}\s*/dev/(?!null(?:\s|$))",
     r"\b(shutdown|reboot|poweroff)\b",
     r"git\s+push\s+--force",
     r"git\s+reset\s+--hard",
