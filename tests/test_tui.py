@@ -1097,16 +1097,37 @@ async def test_bridge_does_not_merge_deltas_across_control_event() -> None:
     ]
 
 
-def test_statusline_contains_context_remaining_and_usage() -> None:
+def test_statusline_contains_context_used_window_and_usage() -> None:
     from coding_agent.runtime.models import Usage
 
     state = make_state(context_used=300, context_window=1000, git_branch=None)
     text = format_statusline(state, usage=Usage(input_tokens=120, output_tokens=45))
-    assert "ctx 300/700/1000" in text
+    # The ctx segment reports only used/window (no "remaining" number).
+    assert "ctx 300/1000" in text
+    assert "/700/" not in text
     assert "in 120" in text
     assert "out 45" in text
     for width in (0, 1, 10, 40):
         assert len(format_statusline(state, width=width)) <= width
+
+
+def test_statusline_ctx_used_window_shows_mode_word() -> None:
+    configured = format_statusline(
+        make_state(context_used=250, context_window=1000, git_branch=None)
+    )
+    assert "ctx 250/1000 (configured)" in str(configured)
+    estimated = format_statusline(
+        make_state(
+            context_used=250,
+            context_window=1000,
+            context_estimated=True,
+            git_branch=None,
+        )
+    )
+    assert "ctx 250/1000 (estimated)" in str(estimated)
+    # Neither rendering leaks a third (remaining) number.
+    assert "/750/" not in str(configured)
+    assert "/750/" not in str(estimated)
 
 
 def test_transcript_markup_values_render_as_literal_text() -> None:

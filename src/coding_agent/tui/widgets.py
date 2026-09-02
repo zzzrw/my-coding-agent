@@ -848,13 +848,13 @@ def format_statusline(
     status = _status_value(state, now)
     runtime_window = getattr(runtime_status, "context_window", None)
     window = state.context_window or runtime_window or 0
-    remaining = max(0, window - used) if window else None
     context: tuple[str, str] | str = ""
     if window:
         estimated = state.context_estimated or getattr(
             runtime_status, "context_estimated", False
         )
-        ctx_value = f"{used}/{remaining}/{window}"
+        # Only used/window is shown; the headroom is implicit in the window.
+        ctx_value = f"{used}/{window}"
         ctx_value += " (estimated)" if estimated else " (configured)"
         context = ("ctx", ctx_value)
     usage_text = ""

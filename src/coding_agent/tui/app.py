@@ -809,11 +809,9 @@ class CodingAgentApp(App[None]):
 
     def _context_notice(self) -> str:
         window = self.state.context_window
-        remaining = max(0, window - self.state.context_used) if window else "?"
         label = "estimated" if self.state.context_estimated else "configured"
         return (
-            f"context used {self.state.context_used}, remaining {remaining}, "
-            f"window {window or '?'} ({label})"
+            f"context used {self.state.context_used}, window {window or '?'} ({label})"
         )
 
     async def action_interrupt(self) -> None:

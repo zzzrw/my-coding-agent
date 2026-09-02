@@ -486,7 +486,7 @@ def test_statusline_labels_context_configured_explicitly() -> None:
     state = make_state(context_used=300, context_window=1000, git_branch=None)
     text = format_statusline(state, usage=Usage(input_tokens=120, output_tokens=45))
 
-    assert "ctx 300/700/1000" in text
+    assert "ctx 300/1000" in text
     assert "configured" in text
     assert "estimated" not in text
     for width in (0, 1, 10, 40, 80):
