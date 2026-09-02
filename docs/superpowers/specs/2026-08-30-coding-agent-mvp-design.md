@@ -43,13 +43,15 @@ tree, profile/bundle system, and scope machinery are out of MVP scope.
 - OpenAI-compatible Chat Completions provider behind an `LLMProvider`
   interface.
 - Async streaming from provider to runtime and live assistant text rendering.
-- Six local tools:
+- Eight local tools:
   - `read_file`
   - `list_files`
   - `grep_files`
   - `write_file`
   - `edit_file`
   - `run_command`
+  - `remove_file`
+  - `clear_directory`
 - Pydantic runtime models and boundary validation.
 - JSONL session persistence and resume.
 - A replaceable `ContextPolicy`; MVP implementation is deterministic
@@ -348,6 +350,8 @@ list_files(path=".", recursive=False, max_entries=200)
 grep_files(pattern, path=".", include=None, max_results=100)
 write_file(path, content)
 edit_file(path, old_text, new_text)
+remove_file(path)
+clear_directory(path)
 run_command(command, timeout_seconds=120)
 ```
 
@@ -365,6 +369,16 @@ Rules:
 - `edit_file` succeeds only when `old_text` occurs exactly once.
 - `write_file` and `edit_file` use same-directory temp file + flush/fsync +
   atomic replace.
+- `remove_file` deletes a single file or empty directory; `clear_directory`
+  removes a directory's contents while keeping the directory itself. Both
+  return a short confirmation and carry `risk_level="mutate_file"`. Their paths
+  resolve through the same permission-aware path policy and approval rules as
+  `write_file` and `edit_file`, so an outside-workspace path requires the same
+  one-time approval in `default`/`workspace` and is allowed in `full`. They are
+  the sanctioned delete tools for in-workspace cleanup instead of raw `rm`, and
+  being `mutate_file` calls they are mutation-journaled like other file
+  mutations, so a removed file's prior content remains restorable (a
+  `clear_directory` snapshot is best-effort).
 - `run_command` uses the workspace as cwd, captures stdout/stderr, enforces a
   timeout, and applies output limits.
 - Tool errors become `ToolResult(ok=False)` and are returned to the model;
@@ -438,7 +452,6 @@ Initial catastrophic patterns are deterministic regular-expression/token rules,
 including:
 
 ```text
-rm\s+-rf\s+(/|/\*|~)
 \b(mkfs|fdisk|shutdown|reboot|poweroff)\b
 git\s+push\b.*--force(?:-with-lease)?\b
 git\s+reset\s+--hard\b
@@ -447,6 +460,30 @@ git\s+clean\s+-[^\n]*f[^\n]*d
 >\s*/dev/(sd|hd|nvme|vd)[a-z0-9]*
 :\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;
 ```
+
+The `rm` rule is workspace-and-root scoped: an operand is catastrophic (denied
+in every mode) only when it can wipe a protected root or a whole home
+directory — exactly `/`, `~`, `$HOME`, `${HOME}`, or `/root`; a whole user home
+(`/home/<name>` or `/home/<name>/*` where `<name>` is a single path component)
+or its contents via a glob (`~/*`, `$HOME/*`, `${HOME}/*`); or anything under
+`/root/` (e.g. `/root/.ssh`). With destructive flags (`-r`/`-f`), an operand
+containing `..` or an unresolvable `$VAR` other than `$HOME`/`${HOME}` is also
+catastrophic. Home subpaths — `/home/<name>/<anything deeper>`, `~/<sub>`,
+`$HOME/<sub>`, `${HOME}/<sub>` — are NOT catastrophic: mode governs them
+(`default` asks, `workspace`/`full` allow). `git reset --hard` stays
+catastrophic even when global options (`-q`, `-C <dir>`, `-c key=val`,
+`--git-dir`) separate `git` from `--hard`; a token analyzer skips the options.
+
+Redirection to `/dev/null` is allowed: `> /dev/null`, `2>/dev/null`,
+`> /dev/null 2>&1`, and `dd ... of=/dev/null` are not catastrophic. The
+`\bdd\b[^\n]*\bof=/dev/` and `>\s*/dev/(sd|hd|nvme|vd)[a-z0-9]*` rules above
+express the intent for real block devices only (`/dev/sd*`, `/dev/hd*`,
+`/dev/nvme*`, `/dev/vd*`).
+
+For in-workspace cleanup the model should use the workspace-bounded
+`remove_file` and `clear_directory` delete tools (§8) rather than raw `rm`;
+`rm` of a permitted home/workspace subpath remains available where the active
+mode allows it.
 
 Unknown or unclassifiable shell syntax is `ask` in `default`; it is `allow`
 in `workspace` and `full` unless it matches a catastrophic rule.
