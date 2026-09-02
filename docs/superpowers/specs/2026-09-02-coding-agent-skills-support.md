@@ -181,7 +181,11 @@ parameters:   {skill: str}
 description:  "Load the body of an installed skill by name. Available skills are
                listed in the system prompt under 'Available skills'; call this
                before acting when the user names a skill or the task matches a
-               listed description."
+               listed description. The result's metadata includes the skill
+               directory ('skill_dir') and the sorted list of files bundled with
+               it ('files'); follow the skill's instructions, reading or running
+               those helper files with the existing read_file/run_command tools
+               (subject to the normal permission checks)."
 ```
 
 The description is kept short on purpose: it points the model at the catalog
@@ -193,17 +197,26 @@ Execution semantics:
 - Not found (or an unsafe name) → `ok=False`,
   `error == "unknown skill: <name>"`.
 - Found → `ok=True`; `content` is the SKILL.md **Markdown body** (the YAML
-  frontmatter is excluded); `metadata` is `{"name": <skill name>,
-  "path": <resolved SKILL.md path>}` where the name is the directory name (the
-  frontmatter `name`, when present and valid, overrides it) — the effective name
-  used for resolution.
+  frontmatter is excluded); `metadata` carries `name` (the directory name, or the
+  frontmatter `name` when present and valid — the effective name used for
+  resolution), `path` (the resolved SKILL.md path), `skill_dir` (the resolved
+  skill directory), `files` (the skill's bundled files as a **sorted list of
+  relative paths**, top-level `SKILL.md` excluded), and `files_truncated` (true
+  when the listing was capped at 50 entries).
 - Bound the body: when `content` exceeds a fixed cap of about 16,000 characters,
   truncate at the cap and append a fixed, deterministic note that the content
   was truncated. (The executor's downstream general output bound of 20,000 chars
   is not relied on; the tool enforces its own tighter cap so a huge skill can
   never blow context.)
-- Content comes only from the resolved skill file. The tool takes no path, reads
-  nothing else, and never traverses outside the two roots.
+- Content comes only from the resolved skill file, and `files` lists only names
+  under the resolved skill directory — the tool reads nothing else and never
+  traverses outside the two roots. Helper scripts are **not executed by
+  `load_skill`**: a skill body may direct the model to read or run a bundled file
+  (`scripts/run.sh`, a reference doc, ...) through the existing `read_file` /
+  `run_command` tools, which stay subject to the normal permission model
+  (bundled files under the workspace run inside it; user-global skills' files
+  live outside the workspace and so follow the ordinary outside-workspace
+  permission rules).
 
 Because `load_skill` is a read-risk tool with no `path` argument, the executor's
 approval policy allows it in every permission mode without a prompt, and the
@@ -242,8 +255,12 @@ authored):
 
 Explicitly out of scope; do not build:
 
-- skill resource folders (`scripts/`, `references/`, `assets/`) and executing or
-  interpreting them;
+- a dedicated skill-execution engine (interpreting `scripts/`, `references/`,
+  `assets/` folders, shell-block or implicit-invocation semantics). Skills may
+  bundle resource files that `load_skill` exposes as a listing; any reading or
+  running of them is done by the model through the ordinary `read_file` /
+  `run_command` tools under the normal permission checks, never by `load_skill`
+  itself;
 - model authoring, editing, deleting, or installing skills (skills are plain
   files authored on disk by the user);
 - forked sub-agents that run skills;

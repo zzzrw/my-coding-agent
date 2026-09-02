@@ -42,7 +42,7 @@ Skills are reusable instruction packages the agent can load on demand. Each skil
 - `<workspace>/.coding-agent/skills/<name>/SKILL.md`
 - `~/.config/coding-agent/skills/<name>/SKILL.md`
 
-Frontmatter fields: `description` (required; a skill without one is skipped), optional `name` (defaults to the directory name), and optional `when_to_use`. Discovered skills appear as a one-line catalog in the run system prompt and can be loaded with the `load_skill` tool, which returns the `SKILL.md` body (bounded at 16,000 characters). `/skills` lists the installed catalog in the TUI. No skill body is ever injected automatically.
+Frontmatter fields: `description` (required; a skill without one is skipped), optional `name` (defaults to the directory name), and optional `when_to_use`. Discovered skills appear as a one-line catalog in the run system prompt and can be loaded with the `load_skill` tool, which returns the `SKILL.md` body (bounded at 16,000 characters) plus the skill directory and a sorted listing of any files bundled beside it (e.g. under `scripts/`). Helper files are read or run by the agent through the normal `read_file`/`run_command` tools under the usual permission checks — `load_skill` never executes them itself. `/skills` lists the installed catalog in the TUI. No skill body is ever injected automatically.
 
 ## Architecture
 
