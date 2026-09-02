@@ -42,6 +42,17 @@ class TranscriptRow(Static):
             self.item_id = item_id
             super().__init__()
 
+    @staticmethod
+    def _row_renderable(
+        item: TranscriptItem, spinner_frame: int = 0, now: float = 0.0
+    ) -> object:
+        """Build the row renderable for an item (markdown for assistant)."""
+        if item.kind == "assistant":
+            if item.pending and not item.text:
+                return _pending_text(item, spinner_frame, now)
+            return markdown_to_text(item.text)
+        return _row_text(item)
+
     def __init__(
         self,
         item: TranscriptItem,
@@ -51,13 +62,7 @@ class TranscriptRow(Static):
         now: float = 0.0,
     ) -> None:
         row_id = _row_id(item, index)
-        if item.kind == "assistant":
-            if item.pending and not item.text:
-                self._renderable = _pending_text(item, spinner_frame, now)
-            else:
-                self._renderable = markdown_to_text(item.text)
-        else:
-            self._renderable = _row_text(item)
+        self._renderable = self._row_renderable(item, spinner_frame, now)
         super().__init__(
             self._renderable,
             id=row_id,
@@ -102,16 +107,50 @@ class TranscriptView(VerticalScroll):
         spinner_frame: int = 0,
         now: float = 0.0,
     ) -> None:
-        """Replace rendered rows with a state snapshot."""
-        await self.remove_children()
-        rows = [
-            TranscriptRow(item, index=index, spinner_frame=spinner_frame, now=now)
-            for index, item in enumerate(items)
-        ]
+        """Synchronize rendered rows with a state snapshot.
+
+        Only rows whose item changed are updated in place and refreshed; settled
+        rows are never re-created. Newly appended rows are mounted. If the row
+        id set or order changes materially (e.g. a session switch), the whole
+        list is replaced.
+        """
+        items = list(items)
+        existing = list(self.query(TranscriptRow))
+        existing_ids = [row.item.item_id for row in existing]
+        new_ids = [item.item_id for item in items]
+
+        if new_ids[: len(existing_ids)] != existing_ids:
+            # Materially different id set or order: full replace.
+            await self.remove_children()
+            rows = [
+                TranscriptRow(item, index=index, spinner_frame=spinner_frame, now=now)
+                for index, item in enumerate(items)
+            ]
+            self._rendered_text = "\n".join(
+                _row_text(item, spinner_frame=spinner_frame, now=now) for item in items
+            )
+            if rows:
+                await self.mount_all(rows)
+            return
+
+        # Same prefix: update changed rows in place, mount only the new suffix.
+        for index, item in enumerate(items[: len(existing_ids)]):
+            row = existing[index]
+            if row.item != item:
+                row.item = item
+                row._renderable = TranscriptRow._row_renderable(
+                    item, spinner_frame, now
+                )
+                row.refresh()
         self._rendered_text = "\n".join(
-            _row_text(row.item, spinner_frame=spinner_frame, now=now) for row in rows
+            _row_text(item, spinner_frame=spinner_frame, now=now) for item in items
         )
-        if rows:
+        if len(items) > len(existing_ids):
+            rows = [
+                TranscriptRow(item, index=index, spinner_frame=spinner_frame, now=now)
+                for index, item in enumerate(items)
+                if index >= len(existing_ids)
+            ]
             await self.mount_all(rows)
 
     def update_pending(self, spinner_frame: int, now: float) -> None:
