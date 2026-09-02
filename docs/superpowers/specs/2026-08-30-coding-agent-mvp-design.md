@@ -765,6 +765,16 @@ while a run is active or an approval is pending; the selection is re-validated
 against the persisted records and, on failure, the prompt is refilled with an
 error notice.
 
+Transcript rendering is incremental: `TranscriptView.render_state` keeps one
+widget per transcript row keyed by item id. On each state snapshot it updates
+only the rows whose content changed — replacing the row's renderable in place
+and refreshing that one widget — and mounts only newly appended rows; settled
+rows are never re-created. A materially changed row set (e.g. a session
+switch) falls back to a full re-render. Tool rows render compact labels: a
+bounded command header that never embeds write/edit payloads (`content`,
+`old_text`, `new_text` are omitted), a collapsed first-line preview, and a
+truncated body only when the row is expanded.
+
 Commands are local and do not enter model history:
 
 ```text
