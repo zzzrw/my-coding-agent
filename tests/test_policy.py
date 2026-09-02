@@ -121,7 +121,15 @@ def test_destructive_push_after_separate_exec_path_is_catastrophic(command):
         ": () { : | : & }; :",
         "rm -rf /home/user",
         "rm -rf /root/.ssh",
-        "rm -rf ~/projects",
+        "rm -rf /root",
+        "rm -rf /home",
+        "rm -rf /home/user/*",
+        "rm -rf /home/user/",
+        "rm -rf ~/*",
+        "rm -rf ~/",
+        "rm -rf $HOME/*",
+        "rm -rf ${HOME}/*",
+        "rm -rf /home/me",
     ],
 )
 def test_more_catastrophic_command_variants_are_always_denied(command):
@@ -133,7 +141,7 @@ def test_more_catastrophic_command_variants_are_always_denied(command):
     [
         "/bin/rm -rf /",
         "rm -rf $HOME",
-        "rm -rf ${HOME}/cache",
+        "rm -rf ${HOME}",
         "git push -f origin main",
     ],
 )
@@ -425,4 +433,35 @@ def test_catastrophic_shell_is_denied_in_workspace_mode(command):
             SHELL, {"command": command}, workspace=Path("."), mode="workspace"
         ).kind
         == "deny"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf ~/projects",
+        "rm -rf ${HOME}/cache",
+        "rm -rf /home/me/.cache/foo",
+        "rm -rf /home/me/.cache",
+        "rm -rf ~/foo",
+        "rm -rf $HOME/.cache/foo",
+        "rm -rf /home/me/workspace/build/app.js",
+        "rm -f /home/me/build/app.js",
+    ],
+)
+def test_home_subpath_removals_are_not_catastrophic(command):
+    policy = DefaultApprovalPolicy()
+    assert classify_command(command).catastrophic is False
+    for mode in ("workspace", "full"):
+        assert (
+            policy.decide(
+                SHELL, {"command": command}, workspace=Path("."), mode=mode
+            ).kind
+            == "allow"
+        )
+    assert (
+        policy.decide(
+            SHELL, {"command": command}, workspace=Path("."), mode="default"
+        ).kind
+        == "ask"
     )

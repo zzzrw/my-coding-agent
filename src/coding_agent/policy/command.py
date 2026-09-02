@@ -29,6 +29,40 @@ _SHELL_SYNTAX = re.compile(
 )
 
 
+_RM_PROTECTED_ROOT_OPERANDS = {"/", "~", "$HOME", "${HOME}", "/home", "/root"}
+_RM_HOME_CONTENT_GLOBS = {"~/*", "$HOME/*", "${HOME}/*"}
+
+
+def _rm_operand_wipes_protected_root(operand: str) -> bool:
+    """True when an ``rm`` operand can wipe a protected root or a whole home.
+
+    A single trailing slash is equivalent to none (``rm -rf ~/`` wipes the
+    home directory, ``/home/me/`` wipes that user's home). The doubled-slash
+    root form ``//`` is left untouched, preserving prior classification.
+    """
+    candidates = [operand]
+    if len(operand) > 1 and operand.endswith("/") and not operand.startswith("//"):
+        candidates.append(operand[:-1])
+    for candidate in candidates:
+        if candidate in _RM_PROTECTED_ROOT_OPERANDS:
+            return True
+        if candidate in _RM_HOME_CONTENT_GLOBS:
+            return True
+        if candidate.startswith("/root/") or re.fullmatch(
+            r"/home/[^/]+(?:/|/\*)?", candidate
+        ):
+            return True
+    return False
+
+
+def _rm_references_unresolvable_variable(operand: str) -> bool:
+    """True when ``operand`` references a ``$VAR`` other than ``$HOME``."""
+    if "$" not in operand:
+        return False
+    remainder = operand.replace("$HOME", "").replace("${HOME}", "")
+    return "$" in remainder
+
+
 def _rm_is_catastrophic(tokens: list[str]) -> bool:
     for index, token in enumerate(tokens):
         if Path(token).name != "rm":
@@ -46,11 +80,9 @@ def _rm_is_catastrophic(tokens: list[str]) -> bool:
             for item in tokens[index + 1 :]
         )
         if any(
-            item == "/"
-            or item == "~"
-            or item in {"$HOME", "${HOME}"}
-            or item.startswith(("/*", "/home", "/root", "~/", "$HOME/", "${HOME}/"))
-            or (destructive_flags and ("$" in item or ".." in item))
+            _rm_operand_wipes_protected_root(item)
+            or (destructive_flags and ".." in item)
+            or (destructive_flags and _rm_references_unresolvable_variable(item))
             for item in operands
         ):
             return True
