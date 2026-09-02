@@ -4,9 +4,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
-from coding_agent.skills.models import Skill
 
 from coding_agent.runtime.events import RuntimeEvent
+from coding_agent.skills.models import Skill
 from coding_agent.tui.app import CodingAgentApp
 from coding_agent.tui.commands import (
     SUPPORTED_COMMANDS,

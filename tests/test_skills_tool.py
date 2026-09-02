@@ -2,9 +2,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from coding_agent.skills.tool import make_load_skill_tool
 
 from coding_agent.policy.approval import DefaultApprovalPolicy
+from coding_agent.skills.tool import make_load_skill_tool
 from coding_agent.tools.registry import ToolContext
 
 BODY = "Do the conventional-commits thing.\n\nUse type, scope, subject."

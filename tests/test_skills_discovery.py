@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+
 from coding_agent.skills.discovery import (
     discover_skills,
     resolve_skill,
