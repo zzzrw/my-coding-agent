@@ -130,6 +130,12 @@ def test_destructive_push_after_separate_exec_path_is_catastrophic(command):
         "rm -rf $HOME/*",
         "rm -rf ${HOME}/*",
         "rm -rf /home/me",
+        "rm -rf /home//user",
+        "rm -rf /home/./user",
+        "rm -rf /home/./user/*",
+        "rm -rf /home//user/*",
+        "rm -rf $HOME//",
+        "rm -rf ~//",
     ],
 )
 def test_more_catastrophic_command_variants_are_always_denied(command):
@@ -447,6 +453,7 @@ def test_catastrophic_shell_is_denied_in_workspace_mode(command):
         "rm -rf $HOME/.cache/foo",
         "rm -rf /home/me/workspace/build/app.js",
         "rm -f /home/me/build/app.js",
+        "rm -rf /home/me//x/./y",
     ],
 )
 def test_home_subpath_removals_are_not_catastrophic(command):

@@ -33,16 +33,38 @@ _RM_PROTECTED_ROOT_OPERANDS = {"/", "~", "$HOME", "${HOME}", "/home", "/root"}
 _RM_HOME_CONTENT_GLOBS = {"~/*", "$HOME/*", "${HOME}/*"}
 
 
+def _canonical_rm_operand(operand: str) -> str:
+    """Return ``operand`` with GNU path canonicalization applied lexically.
+
+    GNU ``rm`` resolves operands through the filesystem, collapsing repeated
+    slashes and dropping ``.`` path components, so ``/home//user``,
+    ``/home/./user`` and ``/home/user`` all name the same whole-home path.
+    Operands containing ``$`` are returned unchanged: a variable may expand to
+    arbitrary text, so lexical normalization would be guesswork.  The doubled-
+    slash root form ``//`` is also preserved, matching prior policy.
+    """
+    if "$" in operand or operand == "//":
+        return operand
+    parts = [part for part in operand.split("/") if part not in ("", ".")]
+    normalized = "/".join(parts)
+    if operand.startswith("/"):
+        normalized = "/" + normalized
+    return normalized
+
+
 def _rm_operand_wipes_protected_root(operand: str) -> bool:
     """True when an ``rm`` operand can wipe a protected root or a whole home.
 
-    A single trailing slash is equivalent to none (``rm -rf ~/`` wipes the
-    home directory, ``/home/me/`` wipes that user's home). The doubled-slash
-    root form ``//`` is left untouched, preserving prior classification.
+    A trailing slash is equivalent to none (``rm -rf ~/`` wipes the home
+    directory, ``/home/me/`` wipes that user's home), and GNU path resolution
+    collapses ``//`` and ``.`` components, so ``/home//me`` and ``/home/./me``
+    wipe a whole home too. The doubled-slash root form ``//`` is left
+    untouched, preserving prior classification.
     """
-    candidates = [operand]
-    if len(operand) > 1 and operand.endswith("/") and not operand.startswith("//"):
-        candidates.append(operand[:-1])
+    candidates = [operand, _canonical_rm_operand(operand)]
+    stripped = operand.rstrip("/")
+    if stripped and stripped != operand:
+        candidates.append(stripped)
     for candidate in candidates:
         if candidate in _RM_PROTECTED_ROOT_OPERANDS:
             return True
