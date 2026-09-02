@@ -192,10 +192,11 @@ def create_app(
     providers. The regular path constructs the OpenAI-compatible provider only
     after required configuration has been resolved.
 
-    ``config`` supplies fallback values (model, key, base URL, context window)
-    used after explicit args and environment variables. When omitted, the
-    config file is loaded lazily only if some field is otherwise unresolved, so
-    a fully environment-configured launch never touches the filesystem.
+    ``config`` supplies fallback values (model, key, base URL, context window,
+    optional ``max_steps`` cap) used after explicit args and environment
+    variables. When omitted, the config file is loaded lazily only if some
+    field is otherwise unresolved, so a fully environment-configured launch
+    never touches the filesystem.
     """
     resolved_workspace = _resolve_workspace(workspace)
 
@@ -216,6 +217,8 @@ def create_app(
     cfg = _load_config()
     resolved_model = _resolve_model(model, cfg)
     resolved_context_window = _resolve_context_window(context_window, cfg)
+    if cfg.max_steps is not None and cfg.max_steps <= 0:
+        raise ConfigurationError("max_steps must be greater than zero")
     resolved_key, _ = _resolve_api_key(api_key, credential_env, cfg)
     if provider is None and not resolved_key:
         env_name = credential_env or " or ".join(DEFAULT_CREDENTIAL_ENV)
@@ -252,6 +255,7 @@ def create_app(
             model=store.header.model,
             context_window=store.header.context_window,
             permission_mode=permission_mode,
+            max_steps=cfg.max_steps,
         )
 
     def make_context_policy():

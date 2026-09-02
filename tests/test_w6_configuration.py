@@ -132,6 +132,31 @@ def test_create_app_uses_config_when_env_absent(tmp_path, monkeypatch):
     assert app.state.context_window == 5000
 
 
+def test_create_app_rejects_non_positive_max_steps(tmp_path, monkeypatch):
+    _clear_all_env(monkeypatch)
+    cfg = Config(model="m", api_key="k", max_steps=0)
+    with pytest.raises(ConfigurationError):
+        create_app(workspace=str(tmp_path), config=cfg)
+
+
+def test_create_app_threads_config_max_steps_into_the_runner(tmp_path, monkeypatch):
+    _clear_all_env(monkeypatch)
+    app = create_app(
+        workspace=str(tmp_path),
+        config=Config(model="m", api_key="k", max_steps=5),
+    )
+    assert app.runtime._runner.max_steps == 5
+
+
+def test_create_app_default_max_steps_is_unbounded_none(tmp_path, monkeypatch):
+    _clear_all_env(monkeypatch)
+    app = create_app(
+        workspace=str(tmp_path),
+        config=Config(model="m", api_key="k"),
+    )
+    assert app.runtime._runner.max_steps is None
+
+
 def test_cli_flag_wins_over_config(tmp_path, monkeypatch):
     _clear_all_env(monkeypatch)
     cfg = Config(model="cfg-model", api_key="cfg-key")

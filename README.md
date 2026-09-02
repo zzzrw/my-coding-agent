@@ -33,6 +33,8 @@ uv run coding-agent --workspace .
 
 `OPENAI_*` and `DEEPSEEK_*` compatibility environment variables are also accepted. The CLI supports `--workspace`, `--model`, `--base-url`, `--session-dir`, and `--context-window`. Help and configuration errors do not expose credential values.
 
+An optional workspace `.coding-agent.toml` (or user `config.toml`) may set `max_steps = N` to cap steps per turn; when absent the agent runs unbounded.
+
 ## Architecture
 
 `coding_agent.app.create_app()` resolves configuration and composes the application boundary. It creates an OpenAI-compatible provider, the six built-in filesystem/search/shell tools, a `ToolRegistry`, `DefaultApprovalPolicy`, and a `ToolExecutor`. The runtime supplies its approval broker through the runner factory, so all tool calls still pass through the existing permission boundary.
