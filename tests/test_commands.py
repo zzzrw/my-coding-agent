@@ -47,6 +47,7 @@ def test_supported_commands_match_the_mvp_registry():
         "quit",
         "exit",
         "undo",
+        "skills",
     }
 
 

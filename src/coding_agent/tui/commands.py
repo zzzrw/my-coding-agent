@@ -35,6 +35,7 @@ _COMMANDS = (
         "resume", "Resume a session by id or prefix", usage="/resume [id|prefix]"
     ),
     CommandSuggestion("session", "Choose a session to resume", usage="/session"),
+    CommandSuggestion("skills", "List available skills", usage="/skills"),
     CommandSuggestion("undo", "Undo the last file write/edit", usage="/undo"),
 )
 SUPPORTED_COMMANDS = frozenset(item.name for item in _COMMANDS)

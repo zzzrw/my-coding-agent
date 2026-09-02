@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from difflib import unified_diff
 from pathlib import Path
@@ -21,6 +21,8 @@ from textual.widgets.option_list import Option
 from coding_agent.policy.memory import Scope
 from coding_agent.runtime.models import RuntimeStatus, Usage
 from coding_agent.session.models import ApprovalRequest, SessionSummary
+from coding_agent.skills.catalog import catalog_lines, overlay_lines
+from coding_agent.skills.models import Skill
 from coding_agent.tui.commands import command_suggestions
 from coding_agent.tui.state import TranscriptItem, TuiState
 
@@ -415,14 +417,16 @@ class HelpScreen(ModalScreen[None]):
 
     ``compose`` yields a single bordered ``Static`` built from
     ``help_overlay_text()``; ``body`` keeps the renderable accessible so tests
-    can inspect the content without an active App.
+    can inspect the content without an active App. When ``skills`` is supplied
+    the overlay also lists the installed skill catalog under a Skills heading.
     """
 
     BINDINGS: ClassVar = [("escape", "close_help", "Close")]
 
-    def __init__(self) -> None:
+    def __init__(self, skills: Sequence[Skill] = ()) -> None:
         super().__init__()
-        self.body = help_overlay_text()
+        self.skills = tuple(skills)
+        self.body = help_overlay_text(self.skills)
 
     def compose(self) -> ComposeResult:
         yield Static(self.body, id="help", markup=False)
@@ -446,8 +450,13 @@ _PERMISSION_LEGEND: tuple[tuple[str, str], ...] = (
 """Permission-mode legend shown in the help overlay."""
 
 
-def help_overlay_text() -> Text:
-    """Build the styled help overlay body: commands, keybindings, permissions."""
+def help_overlay_text(skills: Sequence[Skill] = ()) -> Text:
+    """Build the styled help overlay body: commands, keybindings, permissions.
+
+    ``skills`` is the already-discovered catalog; each skill renders one
+    ``- name: description`` line under a Skills heading, and an empty catalog
+    renders a short "no skills installed" note.
+    """
     body = Text()
     body.append("Commands", style="bold")
     body.append("\n")
@@ -468,6 +477,51 @@ def help_overlay_text() -> Text:
         body.append(f"  {mode:<10}")
         body.append(description)
         body.append("\n")
+    body.append("Skills", style="bold")
+    body.append("\n")
+    for line in catalog_lines(skills):
+        body.append(f"  {line}\n")
+    if not skills:
+        body.append("  no skills installed\n")
+    return body
+
+
+class SkillsScreen(ModalScreen[None]):
+    """Modal overlay listing the discovered skill catalog.
+
+    ``compose`` yields a single bordered ``Static`` built from
+    ``skills_overlay_text()``; ``body`` keeps the renderable accessible so tests
+    can inspect the content without an active App. Styling mirrors
+    ``HelpScreen`` (bordered, ``$surface`` background, centered).
+    """
+
+    BINDINGS: ClassVar = [("escape", "close_skills", "Close")]
+
+    def __init__(self, skills: Sequence[Skill]) -> None:
+        super().__init__()
+        self.skills = list(skills)
+        self.body = skills_overlay_text(self.skills)
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.body, id="skills", markup=False)
+
+    def action_close_skills(self) -> None:
+        self.dismiss(None)
+
+
+def skills_overlay_text(skills: Sequence[Skill]) -> Text:
+    """Build the ``/skills`` overlay body from the discovered catalog.
+
+    Each skill renders ``- name: description`` plus an indented ``when to use:``
+    line when present; an empty catalog renders a "no skills installed" note.
+    """
+    body = Text()
+    body.append("Skills", style="bold")
+    body.append("\n")
+    for line in overlay_lines(skills):
+        body.append(f"  {line}\n")
+    if not skills:
+        body.append("  no skills installed\n")
     return body
 
 

@@ -5,6 +5,7 @@ import contextlib
 import time
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any, ClassVar
 
 from textual import events
@@ -12,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 
 from coding_agent.runtime.events import RuntimeEvent
+from coding_agent.skills.discovery import discover_skills
 from coding_agent.tui.commands import SUPPORTED_COMMANDS, parse_command
 from coding_agent.tui.reducer import reduce
 from coding_agent.tui.state import TuiState, initial_state
@@ -24,6 +26,7 @@ from coding_agent.tui.widgets import (
     PermissionModeScreen,
     RewindPicker,
     SessionSelector,
+    SkillsScreen,
     StatusLine,
     SubmitTextArea,
     TranscriptRow,
@@ -256,9 +259,9 @@ class CodingAgentApp(App[None]):
     #composer-input { height: 4; width: 1fr; }
     #composer > #command-palette { width: 1fr; display: none; height: auto; max-height: 8; overlay: screen; constrain: none inside; border: tall $border-blurred; background: $surface; }
     #statusline { height: 1; width: 1fr; }
-    ApprovalScreen, HelpScreen, HistoryScreen, SessionSelector, PermissionModeScreen, RewindPicker { align: center middle; }
-    #approval, #permission-full, #permission-mode, #session-selector, #help, #history, #rewind-picker { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
-    #help, #history { max-height: 80%; overflow-y: auto; }
+    ApprovalScreen, HelpScreen, HistoryScreen, SessionSelector, PermissionModeScreen, RewindPicker, SkillsScreen { align: center middle; }
+    #approval, #permission-full, #permission-mode, #session-selector, #help, #history, #rewind-picker, #skills { width: 76; height: auto; padding: 1 2; border: round $accent; background: $surface; }
+    #help, #history, #skills { max-height: 80%; overflow-y: auto; }
     #rewind-picker-options { height: auto; max-height: 18; }
     #rewind-picker-title { margin-bottom: 1; text-style: bold; }
     #approval-details, #permission-full-details { height: auto; margin-bottom: 1; }
@@ -284,12 +287,14 @@ class CodingAgentApp(App[None]):
         initial_state: TuiState | None = None,
         queue_size: int = 256,
         branch_detector: Callable[[str], str | None] | None = None,
+        skills_user_root: Path | None = None,
     ) -> None:
         super().__init__()
         self.runtime = runtime
         self.state = initial_state or _state_from_runtime(runtime)
         self._queue_size = queue_size
         self._branch_detector = branch_detector or detect_git_branch
+        self._skills_user_root = skills_user_root
         self._git_branch_detections = 0
         self._bridge: _RuntimeBridge | None = None
         self._unsubscribe: Callable[[], None] | None = None
@@ -484,7 +489,13 @@ class CodingAgentApp(App[None]):
         """Push the help overlay (bound to ``?`` and the ``/help`` command)."""
         if isinstance(self.screen, HelpScreen):
             return
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(skills=self._skills_catalog()))
+
+    def _skills_catalog(self):
+        """Discover the installed skills for the current session workspace."""
+        return discover_skills(
+            Path(self.state.workspace), user_root=self._skills_user_root
+        )
 
     def _inbox_rows(self) -> list[str]:
         """Recent tool/approval summaries from ``store.records()``.
@@ -593,6 +604,11 @@ class CodingAgentApp(App[None]):
                 group="runtime",
                 exit_on_error=False,
             )
+        elif name == "skills":
+            if args:
+                self._show_notice("usage: /skills")
+                return
+            self.push_screen(SkillsScreen(self._skills_catalog()))
 
     def _request_shutdown(self) -> None:
         """Abort any runtime-owned turn before Textual tears down the UI."""
@@ -639,6 +655,7 @@ class CodingAgentApp(App[None]):
                 PermissionFullScreen,
                 PermissionModeScreen,
                 SessionSelector,
+                SkillsScreen,
             ),
         ):
             self.screen.dismiss(None)
