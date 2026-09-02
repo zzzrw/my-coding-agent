@@ -289,6 +289,9 @@ class CodingAgentApp(App[None]):
         self._branch_detector = branch_detector or detect_git_branch
         self._skills_user_root = skills_user_root
         self._git_branch_detections = 0
+        self._follow_bottom = False
+        self._last_tail_id: str | None = None
+        self._scroll_settle_scheduled = False
         self._bridge: _RuntimeBridge | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._approval_request_id: str | None = None
@@ -1009,13 +1012,29 @@ class CodingAgentApp(App[None]):
                 return
             transcript = self.query_one("#transcript", TranscriptView)
             at_end = transcript.is_vertical_scroll_end
+            tail = self.state.transcript[-1] if self.state.transcript else None
+            tail_changed = tail is not None and tail.item_id != self._last_tail_id
+            # Keep following the newest row not only when the view is already at
+            # the bottom, but also when a row was appended while we were at the
+            # bottom on the previous refresh. Local commands append a row and may
+            # open an overlay that shrinks the viewport before the scheduled
+            # refresh runs, so the pre-render at_end check alone would leave the
+            # fresh row just under the fold.
+            follow = at_end or (self._follow_bottom and tail_changed)
             await transcript.render_state(
                 self.state.transcript,
                 spinner_frame=self.state.spinner_frame,
                 now=time.monotonic(),
             )
-            if at_end:
+            if follow:
                 transcript.scroll_end(animate=False)
+                # scroll_end right after mounting can run before the widget has
+                # re-laid out, so it uses a stale max_scroll_y and a freshly
+                # appended row (e.g. a local command) is left just under the
+                # fold. Re-run once the layout settles to land on the true end.
+                self._schedule_scroll_settle()
+            self._follow_bottom = at_end
+            self._last_tail_id = tail.item_id if tail is not None else None
             self.query_one("#statusline", StatusLine).render_state(
                 self.state, getattr(self.runtime, "status", None)
             )
@@ -1023,6 +1042,24 @@ class CodingAgentApp(App[None]):
             self._refresh_in_progress = False
             if self._refresh_pending:
                 self.call_after_refresh(self._refresh_widgets)
+
+    def _schedule_scroll_settle(self) -> None:
+        """Re-scroll to the transcript end once a pending layout settles.
+
+        Coalesced so a burst of deltas schedules at most one follow-up.
+        """
+        if self._scroll_settle_scheduled:
+            return
+        self._scroll_settle_scheduled = True
+        self.set_timer(0.05, self._settle_scroll_end)
+
+    def _settle_scroll_end(self) -> None:
+        self._scroll_settle_scheduled = False
+        if not self.is_mounted:
+            return
+        transcript = self.query_one("#transcript", TranscriptView)
+        if not transcript.is_vertical_scroll_end:
+            transcript.scroll_end(animate=False)
 
     def on_resize(self, event: events.Resize) -> None:
         if self.is_mounted:

@@ -59,17 +59,40 @@ ONBOARDING_BASE_URL_ENVS = (
 )
 
 
+_LANGUAGE_NAMES = {
+    "zh": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "hi": "Hindi",
+}
+
+
+def _language_name(language: str) -> str:
+    """Map a config language code to a display name (fallback: the code)."""
+    name = _LANGUAGE_NAMES.get((language or "").strip().lower())
+    return name or (language or "zh")
+
+
 def build_system_prompt(
     workspace: Path,
     permission_mode: PermissionMode,
     *,
     skills: Sequence[Skill] = (),
+    language: str = "zh",
 ) -> Message:
     """Return the system prompt embedding the safety boundaries for a run.
 
     ``skills`` is the already-discovered skill catalog; when empty no catalog
     section is emitted, so a skill-less run stays byte-identical to prior
     builds. Only the one-line catalog is appended — never a SKILL.md body.
+    ``language`` is the preferred reply language code (e.g. ``"zh"``); the
+    prompt instructs the model to reply in it.
     """
     section = format_catalog(skills)
     fixed = dedent(
@@ -119,9 +142,10 @@ def build_system_prompt(
           and stop it with pkill or kill.
         - Workspace root: {workspace}"""
     )
+    lead = f"Respond in {_language_name(language)}."
     return Message(
         role="system",
-        content=fixed + (("\n\n" + section) if section else ""),
+        content=lead + "\n\n" + fixed + (("\n\n" + section) if section else ""),
     )
 
 
@@ -229,6 +253,7 @@ def create_app(
     session_dir: str | Path | None = None,
     provider: LLMProvider | None = None,
     permission_mode: PermissionMode = "workspace",
+    language: str | None = None,
     config: Config | None = None,
 ) -> CodingAgentApp:
     """Build a fully wired Textual app with injectable provider support.
@@ -284,8 +309,9 @@ def create_app(
     approval_policy = DefaultApprovalPolicy()
     journal = MutationJournal()
     skills = discover_skills(resolved_workspace)
+    resolved_language = language or cfg.language or "zh"
     system_prompt = build_system_prompt(
-        resolved_workspace, permission_mode, skills=skills
+        resolved_workspace, permission_mode, skills=skills, language=resolved_language
     )
 
     def runner_factory(store, context_policy, broker):

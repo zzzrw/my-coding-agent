@@ -33,7 +33,7 @@ uv run coding-agent --workspace .
 
 `OPENAI_*` and `DEEPSEEK_*` compatibility environment variables are also accepted. The CLI supports `--workspace`, `--model`, `--base-url`, `--session-dir`, and `--context-window`. Help and configuration errors do not expose credential values.
 
-An optional workspace `.coding-agent.toml` (or user `config.toml`) may set `max_steps = N` to cap steps per turn; when absent the agent runs unbounded.
+An optional workspace `.coding-agent.toml` (or user `config.toml`) may set `max_steps = N` to cap steps per turn (absent = unbounded) and `language = 'zh'` to pick the reply language (default Chinese).
 
 ## Skills
 
