@@ -1074,7 +1074,7 @@ def _state_from_runtime(runtime: Any) -> TuiState:
     context_used = getattr(runtime_status, "context_used", 0)
     status_window = getattr(runtime_status, "context_window", None)
     context_estimated = getattr(runtime_status, "context_estimated", False)
-    policy = getattr(runtime, "permission_mode", "default")
+    policy = getattr(runtime, "permission_mode", "workspace")
     if policy not in {"default", "workspace", "full"}:
         policy = "default"
     if status not in {"idle", "running", "waiting_approval", "error", "aborted"}:

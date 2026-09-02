@@ -199,7 +199,7 @@ def create_app(
     context_window: int | None = None,
     session_dir: str | Path | None = None,
     provider: LLMProvider | None = None,
-    permission_mode: PermissionMode = "default",
+    permission_mode: PermissionMode = "workspace",
     config: Config | None = None,
 ) -> CodingAgentApp:
     """Build a fully wired Textual app with injectable provider support.

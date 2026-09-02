@@ -676,8 +676,7 @@ async def test_permission_change_shows_confirmation_notice() -> None:
     assert runtime.permissions == ["workspace"]
     assert app.state.policy == "workspace"
     assert any(
-        row.kind == "system"
-        and "permission mode changed to workspace" in row.text
+        row.kind == "system" and "permission mode changed to workspace" in row.text
         for row in app.state.transcript
     )
 

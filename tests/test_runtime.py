@@ -585,10 +585,10 @@ async def test_new_and_resume_reset_permission(tmp_path):
     old_id = runtime.session_id
     await runtime.set_permission("full")
     new_id = await runtime.new_session()
-    assert new_id != old_id and runtime.permission_mode == "default"
+    assert new_id != old_id and runtime.permission_mode == "workspace"
     await runtime.set_permission("full")
     await runtime.resume(old_id)
-    assert runtime.permission_mode == "default" and runtime.session_id == old_id
+    assert runtime.permission_mode == "workspace" and runtime.session_id == old_id
 
 
 @pytest.mark.asyncio
@@ -629,7 +629,7 @@ async def test_set_permission_publishes_previous_policy(tmp_path):
     await runtime.set_permission("full")
 
     changed = next(event for event in events if event.type == "policy_changed")
-    assert changed.payload == {"policy": "full", "previous_policy": "default"}
+    assert changed.payload == {"policy": "full", "previous_policy": "workspace"}
 
 
 @pytest.mark.asyncio

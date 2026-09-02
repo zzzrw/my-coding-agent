@@ -38,7 +38,7 @@ class TuiState(BaseModel):
     context_used: int = 0
     context_window: int = 0
     context_estimated: bool = False
-    policy: Literal["default", "workspace", "full"] = "default"
+    policy: Literal["default", "workspace", "full"] = "workspace"
     status: Literal["idle", "running", "waiting_approval", "error", "aborted"] = "idle"
     active_run_id: str | None = None
     active_turn_id: str | None = None
@@ -57,7 +57,7 @@ def initial_state(
     *,
     session_id: str | None = None,
     context_window: int = 0,
-    policy: Literal["default", "workspace", "full"] = "default",
+    policy: Literal["default", "workspace", "full"] = "workspace",
 ) -> TuiState:
     return TuiState(
         session_id=session_id,

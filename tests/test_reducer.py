@@ -372,7 +372,7 @@ def test_context_session_policy_and_notice_updates():
     assert state.session_id == "s2"
     assert state.workspace == "/new"
     assert state.model == "new-model"
-    assert state.policy == "default"
+    assert state.policy == "workspace"
     assert state.context_used == 0
     assert state.context_window == 200
     assert state.context_estimated is False

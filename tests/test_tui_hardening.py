@@ -585,7 +585,7 @@ def test_statusline_returns_rich_text_with_all_key_value_fields() -> None:
     for needle in (
         "branch main",
         "model deepseek-chat",
-        "perm default",
+        "perm workspace",
         "session abc12345",
     ):
         assert needle in text
@@ -600,7 +600,7 @@ def test_statusline_keys_are_dim_and_values_are_not_dim() -> None:
     assert _style_for(text, "model").dim
     assert not _style_for(text, "deepseek-chat").dim
     assert _style_for(text, "perm").dim
-    assert not _style_for(text, "default").dim
+    assert not _style_for(text, "workspace").dim
     assert _style_for(text, "session").dim
     assert not _style_for(text, "abc12345").dim
 

@@ -266,7 +266,7 @@ def reduce(state: TuiState, event: RuntimeEvent) -> TuiState:
             context_used=0,
             context_window=_int(payload.get("context_window"), 0),
             context_estimated=False,
-            policy="default",
+            policy="workspace",
             status="idle",
             active_run_id=None,
             active_turn_id=None,

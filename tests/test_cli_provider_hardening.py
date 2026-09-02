@@ -33,6 +33,17 @@ def _clear_env(monkeypatch, names=_ALL_ENVS):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_config(tmp_path, monkeypatch):
+    """Point the config home at an empty per-test dir.
+
+    Resolution tests assert "missing" states by clearing env vars; they must
+    not silently pick up a real ``$XDG_CONFIG_HOME/coding-agent/config.toml``
+    that happens to exist on the machine running the suite.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+
 # --- context-window default resolution -----------------------------------
 
 

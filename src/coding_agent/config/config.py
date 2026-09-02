@@ -31,7 +31,7 @@ class Config(BaseModel):
     api_key: str = ""
     base_url: str = ""
     context_window: int = 0
-    permission_mode: str = "default"
+    permission_mode: str = "workspace"
     max_steps: int | None = None
 
     model_config = ConfigDict(extra="forbid")
@@ -99,7 +99,7 @@ def _toml_lines(config: Config) -> list[str]:
         lines.append(f"context_window = {config.context_window}")
     if config.max_steps:
         lines.append(f"max_steps = {config.max_steps}")
-    if config.permission_mode and config.permission_mode != "default":
+    if config.permission_mode and config.permission_mode != "workspace":
         lines.append(f"permission_mode = '{config.permission_mode}'")
     return lines
 

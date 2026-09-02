@@ -201,7 +201,7 @@ class AgentRuntime:
         approval_policy: ApprovalPolicy,
         system_prompt: Message,
         model: str,
-        permission_mode: PermissionMode = "default",
+        permission_mode: PermissionMode = "workspace",
         summarizer: Callable[[list[Message]], Awaitable[str]] | None = None,
     ) -> None:
         self.store = store
@@ -536,7 +536,7 @@ class AgentRuntime:
                 model=self._model,
                 context_window=self.store.header.context_window,
             )
-            self._permission_mode = "default"
+            self._permission_mode = "workspace"
             self._last_outcome = None
             self._status = RuntimeStatus(
                 context_window=self.store.header.context_window
@@ -567,7 +567,7 @@ class AgentRuntime:
             self.store = SessionStore.open(self.store.path.parent, session_id)
             self.store.mark_open_final_turn_interrupted()
             self._model = self.store.header.model
-            self._permission_mode = "default"
+            self._permission_mode = "workspace"
             self._last_outcome = None
             self._status = RuntimeStatus(
                 context_window=self.store.header.context_window
@@ -661,7 +661,7 @@ class AgentRuntime:
             for item in prefix:
                 new_store.append(item)
             self.store = new_store
-            self._permission_mode = "default"
+            self._permission_mode = "workspace"
             self._last_outcome = None
             self._status = RuntimeStatus(context_window=new_store.header.context_window)
             self._runner = self._make_runner()
