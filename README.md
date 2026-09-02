@@ -35,6 +35,15 @@ uv run coding-agent --workspace .
 
 An optional workspace `.coding-agent.toml` (or user `config.toml`) may set `max_steps = N` to cap steps per turn; when absent the agent runs unbounded.
 
+## Skills
+
+Skills are reusable instruction packages the agent can load on demand. Each skill is a directory holding a `SKILL.md` (YAML frontmatter plus a Markdown body) under one of two discovery roots, scanned workspace-first:
+
+- `<workspace>/.coding-agent/skills/<name>/SKILL.md`
+- `~/.config/coding-agent/skills/<name>/SKILL.md`
+
+Frontmatter fields: `description` (required; a skill without one is skipped), optional `name` (defaults to the directory name), and optional `when_to_use`. Discovered skills appear as a one-line catalog in the run system prompt and can be loaded with the `load_skill` tool, which returns the `SKILL.md` body (bounded at 16,000 characters). `/skills` lists the installed catalog in the TUI. No skill body is ever injected automatically.
+
 ## Architecture
 
 `coding_agent.app.create_app()` resolves configuration and composes the application boundary. It creates an OpenAI-compatible provider, the six built-in filesystem/search/shell tools, a `ToolRegistry`, `DefaultApprovalPolicy`, and a `ToolExecutor`. The runtime supplies its approval broker through the runner factory, so all tool calls still pass through the existing permission boundary.
